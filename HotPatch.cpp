@@ -126,6 +126,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		{
 			Logging::LogFormat(__FUNCTION__ " Error: '%s' is not patch aware at addr=%p", apiname, apiproc);
 
+#ifdef _DEBUG
 			// Log memory
 			BYTE lpBuffer[12];
 			if (ReadProcessMemory(GetCurrentProcess(), patch_address, lpBuffer, 12, nullptr))
@@ -137,6 +138,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 					lpBuffer[8], lpBuffer[9], lpBuffer[10], lpBuffer[11]);
 				Logging::LogFormat(buffer);
 			}
+#endif
 
 			return 0; // not hot patch "aware"
 		}
