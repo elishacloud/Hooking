@@ -53,7 +53,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	orig_address = (BYTE *)apiproc + 2;
 
 	// Entry point could be at the top of a page? so VirtualProtect first to make sure patch_address is readable
-	if (!VirtualProtect(patch_address, 12, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
+	if (!VirtualProtect(patch_address, 12, PAGE_READWRITE, &dwPrevProtect))
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot hook api=%s at addr=%p err=%x", apiname, apiproc, GetLastError());
 		return 0; // access denied
@@ -154,7 +154,7 @@ bool Hook::UnHotPatchAll()
 	{
 		// VirtualProtect first to make sure patch_address is readable
 		DWORD dwPrevProtect;
-		if (VirtualProtect(HotPatchProcs.back().procaddr, 12, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
+		if (VirtualProtect(HotPatchProcs.back().procaddr, 12, PAGE_READWRITE, &dwPrevProtect))
 		{
 			// Read memory
 			if (ReadProcessMemory(GetCurrentProcess(), HotPatchProcs.back().procaddr, lpBuffer, 12, nullptr))
@@ -219,7 +219,7 @@ bool Hook::UnhookHotPatch(void *apiproc, const char *apiname, void *hookproc)
 		if (HotPatchProcs[x].procaddr == patch_address)
 		{
 			// VirtualProtect first to make sure patch_address is readable
-			if (VirtualProtect(HotPatchProcs[x].procaddr, 12, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
+			if (VirtualProtect(HotPatchProcs[x].procaddr, 12, PAGE_READWRITE, &dwPrevProtect))
 			{
 				// Read memory
 				if (ReadProcessMemory(GetCurrentProcess(), HotPatchProcs[x].procaddr, lpBuffer, 12, nullptr))
@@ -257,7 +257,7 @@ bool Hook::UnhookHotPatch(void *apiproc, const char *apiname, void *hookproc)
 	}
 
 	// Entry point could be at the top of a page? so VirtualProtect first to make sure patch_address is readable
-	if (!VirtualProtect(patch_address, 12, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
+	if (!VirtualProtect(patch_address, 12, PAGE_READWRITE, &dwPrevProtect))
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot hook api=%s at addr=%p err=%x", apiname, apiproc, GetLastError());
 		return false; // access denied

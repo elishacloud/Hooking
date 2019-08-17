@@ -177,7 +177,7 @@ void *Hook::IATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apipr
 					org = (void *)ptaddr->u1.Function;
 					if (org == hookproc) return (void *)1; // already hooked
 
-					if (!VirtualProtect(&ptaddr->u1.Function, 4, PAGE_EXECUTE_READWRITE, &oldprotect))
+					if (!VirtualProtect(&ptaddr->u1.Function, 4, PAGE_READWRITE, &oldprotect))
 					{
 #ifdef _DEBUG
 						Logging::LogFormat(__FUNCTION__ ": VirtualProtect error %d at %d", GetLastError(), __LINE__);						
@@ -371,7 +371,7 @@ bool Hook::UnhookIATPatch(HMODULE module, DWORD ordinal, const char *dll, void *
 					if (org == hookproc)
 					{
 
-						if (!VirtualProtect(&ptaddr->u1.Function, 4, PAGE_EXECUTE_READWRITE, &oldprotect))
+						if (!VirtualProtect(&ptaddr->u1.Function, 4, PAGE_READWRITE, &oldprotect))
 						{
 #ifdef _DEBUG
 							Logging::LogFormat(__FUNCTION__ ": VirtualProtect error %d at %d", GetLastError(), __LINE__);							
