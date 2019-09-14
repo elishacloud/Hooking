@@ -155,13 +155,15 @@ FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 	Logging::LogFormat(__FUNCTION__ ": Searching for %s.", FunctionName);
 #endif
 
+	FARPROC functAddr = ::GetProcAddress(hModule, FunctionName);
+
 	__try {
 		pIDH = (PIMAGE_DOS_HEADER)hModule;
 
 		if (pIDH->e_magic != IMAGE_DOS_SIGNATURE)
 		{
 			Logging::LogFormat(__FUNCTION__ " Error: %s is not IMAGE_DOS_SIGNATURE.", FunctionName);
-			return nullptr;
+			return functAddr;
 		}
 
 		pINH = (PIMAGE_NT_HEADERS)((LPBYTE)hModule + pIDH->e_lfanew);
@@ -169,13 +171,13 @@ FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 		if (pINH->Signature != IMAGE_NT_SIGNATURE)
 		{
 			Logging::LogFormat(__FUNCTION__ " Error: %s is not IMAGE_NT_SIGNATURE.", FunctionName);
-			return nullptr;
+			return functAddr;
 		}
 
 		if (pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress == 0)
 		{
 			Logging::LogFormat(__FUNCTION__ " Error: Could not get VirtualAddress in %s.", FunctionName);
-			return nullptr;
+			return functAddr;
 		}
 
 		pIED = (PIMAGE_EXPORT_DIRECTORY)((LPBYTE)hModule + pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
@@ -200,7 +202,7 @@ FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 
 	// Exit function
 	Logging::LogFormat(__FUNCTION__ " Error: Could not find %s.", FunctionName);
-	return nullptr;
+	return functAddr;
 }
 
 // Unhook all APIs

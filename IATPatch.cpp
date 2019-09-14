@@ -66,6 +66,41 @@ void *Hook::IATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apipr
 	DWORD oldprotect;
 	void *org;
 
+	// Check if dll name is blank
+	if (!dll)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: NULL dll name");
+		return apiproc;
+	}
+
+	// Check if API name is blank
+	if (!apiname)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: NULL api name");
+		return apiproc;
+	}
+
+	// Check module addresses
+	if (!module)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: NULL api module address for '%s'", apiname);
+		return apiproc;
+	}
+
+	// Check API address
+	if (!apiproc)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: Failed to find '%s' api", apiname);
+		return apiproc;
+	}
+
+	// Check hook address
+	if (!hookproc)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: Invalid hook address for '%s'", apiname);
+		return apiproc;
+	}
+
 #ifdef _DEBUG
 	Logging::LogFormat(__FUNCTION__ ": module=%p ordinal=%x name=%s dll=%s", module, ordinal, apiname, dll);	
 #endif

@@ -32,7 +32,8 @@ namespace Hook
 	{
 		BYTE lpOrgBuffer[12];
 		BYTE lpNewBuffer[12];
-		void* procaddr;
+		void* procaddr = nullptr;
+		void* alocmemaddr = nullptr;
 	};
 
 	std::vector<HOTPATCH> HotPatchProcs;
@@ -49,6 +50,20 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p hook=%p", apiname, apiproc, hookproc);
 #endif
 
+	// Check API address
+	if (!apiproc)
+	{
+		Logging::Log() << __FUNCTION__ << " Error: Failed to find '" << apiname << "' api";
+		return apiproc;
+	}
+
+	// Check hook address
+	if (!hookproc)
+	{
+		Logging::Log() << __FUNCTION__ << " Error: Invalid hook address for '" << apiname << "'";
+		return apiproc;
+	}
+
 	patch_address = ((BYTE *)apiproc) - 5;
 	orig_address = (BYTE *)apiproc + 2;
 
@@ -56,7 +71,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	if (!VirtualProtect(patch_address, 12, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot hook api=%s at addr=%p err=%x", apiname, apiproc, GetLastError());
-		return 0; // access denied
+		return nullptr; // access denied
 	}
 
 	// Check if API can be patched
@@ -93,6 +108,42 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		return orig_address;
 	}
 
+	// Check short reference
+	else if ((!memcmp("\x09\x09\xB8", patch_address + 3, 3) || !memcmp("\xCC\xCC\xB8", patch_address + 3, 3)) && !memcmp("\x80", patch_address + 9, 1))
+	{
+		// Create new memory an prepare to patch
+		BYTE *NewMem = (BYTE*)VirtualAlloc(nullptr, 16, MEM_COMMIT, PAGE_READWRITE);
+		DWORD dwNull = 0;
+		if (!VirtualProtect(NewMem, 9, PAGE_EXECUTE_READWRITE, &dwNull))
+		{
+			Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot mark memory as executable api=%s at addr=%p err=%x", apiname, NewMem, GetLastError());
+			delete NewMem;
+			return nullptr; // access denied
+		}
+		memcpy(NewMem, patch_address + 5, 7);
+
+		// Backup memory
+		HOTPATCH tmpMemory;
+		tmpMemory.procaddr = patch_address;
+		tmpMemory.alocmemaddr = NewMem;
+		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, 12, nullptr);
+
+		// Set HotPatch hook
+		*(patch_address + 5) = 0xE9; // jmp (4-byte relative)
+		*((DWORD *)(patch_address + 6)) = (DWORD)hookproc - (DWORD)patch_address - 10; // relative address
+
+		// Get memory after update
+		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, 12, nullptr);
+
+		// Save memory
+		HotPatchProcs.push_back(tmpMemory);
+
+		// Restore protection
+		VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
+
+		return NewMem;
+	}
+
 	// Check if API is just a pointer to another API
 	else if (!(memcmp("\x90\x90\x90\x90\x90\xFF\x25", patch_address, 7) && memcmp("\xCC\xCC\xCC\xCC\xCC\xFF\x25", patch_address, 7)))
 	{
@@ -113,7 +164,8 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	// API cannot be patched
 	else
 	{
-		VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect); // restore protection
+		// Restore protection
+		VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
 
 		// check it wasn't patched already
 		if ((*patch_address == 0xE9) && (*(WORD *)apiproc == 0xF9EB))
@@ -126,7 +178,6 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		{
 			Logging::LogFormat(__FUNCTION__ " Error: '%s' is not patch aware at addr=%p", apiname, apiproc);
 
-#ifdef _DEBUG
 			// Log memory
 			BYTE lpBuffer[12];
 			if (ReadProcessMemory(GetCurrentProcess(), patch_address, lpBuffer, 12, nullptr))
@@ -138,9 +189,8 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 					lpBuffer[8], lpBuffer[9], lpBuffer[10], lpBuffer[11]);
 				Logging::LogFormat(buffer);
 			}
-#endif
 
-			return 0; // not hot patch "aware"
+			return nullptr; // not hot patch "aware"
 		}
 	}
 }
@@ -190,6 +240,11 @@ bool Hook::UnHotPatchAll()
 			// Access denied
 			flag = false;
 			Logging::LogFormat(__FUNCTION__ " Error: access denied. procaddr: %p", HotPatchProcs.back().procaddr);
+		}
+		// Free VirtualAlloc memory
+		if (HotPatchProcs.back().alocmemaddr)
+		{
+			VirtualFree(HotPatchProcs.back().alocmemaddr, 0, MEM_RELEASE);
 		}
 		HotPatchProcs.pop_back();
 	}
