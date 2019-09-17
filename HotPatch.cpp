@@ -117,10 +117,18 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		// Create new memory an prepare to patch
 		BYTE *NewMem = (BYTE*)VirtualAlloc(nullptr, 16, MEM_COMMIT, PAGE_READWRITE);
 		DWORD dwNull = 0;
-		if (!VirtualProtect(NewMem, 16, PAGE_EXECUTE_READWRITE, &dwNull))
+		if (!NewMem || !VirtualProtect(NewMem, 16, PAGE_EXECUTE_READWRITE, &dwNull))
 		{
 			Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot mark memory as executable api=%s at addr=%p err=%x", apiname, NewMem, GetLastError());
-			delete NewMem;
+
+			if (NewMem)
+			{
+				VirtualFree(NewMem, 0, MEM_RELEASE);
+			}
+
+			// Restore protection
+			VirtualProtect(patch_address, 12, dwPrevProtect, &dwNull);
+
 			return nullptr; // access denied
 		}
 
@@ -152,6 +160,12 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		VirtualProtect(NewMem, 16, dwPrevProtect, &dwNull);
 		VirtualProtect(patch_address, 12, dwPrevProtect, &dwNull);
 
+		// Flush cache
+		FlushInstructionCache(GetCurrentProcess(), NewMem, 16);
+		FlushInstructionCache(GetCurrentProcess(), patch_address, 12);
+#ifdef _DEBUG
+		Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
+#endif
 		return NewMem;
 	}
 
