@@ -108,19 +108,26 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		return orig_address;
 	}
 
-	// Check short reference
-	else if ((!memcmp("\x09\x09\xB8", patch_address + 3, 3) || !memcmp("\xCC\xCC\xB8", patch_address + 3, 3)) && !memcmp("\x80", patch_address + 9, 1))
+	// Check for common 7-byte assembly header
+	else if (!memcmp("\x90\x90\x90\x90\x90\x90\x90", patch_address + 5, 7) || !memcmp("\xCC\xCC\xCC\xCC\xCC\xCC\xCC", patch_address + 5, 7) ||
+		(!memcmp("\xB8", patch_address + 5, 1) && !memcmp("\xC2", patch_address + 10, 1)) ||
+		(!memcmp("\x8D\x4C\x24", patch_address + 5, 3) && !memcmp("\x83\xE4", patch_address + 9, 2)) ||
+		!memcmp("\xF6\x05", patch_address + 5, 2))
 	{
 		// Create new memory an prepare to patch
 		BYTE *NewMem = (BYTE*)VirtualAlloc(nullptr, 16, MEM_COMMIT, PAGE_READWRITE);
 		DWORD dwNull = 0;
-		if (!VirtualProtect(NewMem, 9, PAGE_EXECUTE_READWRITE, &dwNull))
+		if (!VirtualProtect(NewMem, 16, PAGE_EXECUTE_READWRITE, &dwNull))
 		{
 			Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot mark memory as executable api=%s at addr=%p err=%x", apiname, NewMem, GetLastError());
 			delete NewMem;
 			return nullptr; // access denied
 		}
+
+		// Write old data to new memory before overwritting it
 		memcpy(NewMem, patch_address + 5, 7);
+		*(NewMem + 8) = 0xE9; // jmp (4-byte relative)
+		*((DWORD *)(NewMem + 9)) = (DWORD)patch_address - (DWORD)NewMem - 8; // relative address
 
 		// Backup memory
 		HOTPATCH tmpMemory;
@@ -131,6 +138,9 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		// Set HotPatch hook
 		*(patch_address + 5) = 0xE9; // jmp (4-byte relative)
 		*((DWORD *)(patch_address + 6)) = (DWORD)hookproc - (DWORD)patch_address - 10; // relative address
+		*(patch_address + 10) = 0x90; // nop
+		*(patch_address + 11) = 0x90; // nop
+		*(patch_address + 12) = 0x90; // nop
 
 		// Get memory after update
 		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, 12, nullptr);
@@ -139,7 +149,8 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		HotPatchProcs.push_back(tmpMemory);
 
 		// Restore protection
-		VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
+		VirtualProtect(NewMem, 16, dwPrevProtect, &dwNull);
+		VirtualProtect(patch_address, 12, dwPrevProtect, &dwNull);
 
 		return NewMem;
 	}
