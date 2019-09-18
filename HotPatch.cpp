@@ -135,7 +135,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		// Write old data to new memory before overwritting it
 		memcpy(NewMem, patch_address + 5, 7);
 		*(NewMem + 8) = 0xE9; // jmp (4-byte relative)
-		*((DWORD *)(NewMem + 9)) = (DWORD)patch_address - (DWORD)NewMem - 8; // relative address
+		*((DWORD *)(NewMem + 9)) = (DWORD)patch_address - (DWORD)NewMem; // relative address
 
 		// Backup memory
 		HOTPATCH tmpMemory;
