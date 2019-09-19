@@ -37,21 +37,21 @@ void *Hook::HookAPI(HMODULE module, const char *dll, void *apiproc, const char *
 	if (!apiname)
 	{
 		Logging::Log() << __FUNCTION__ << " Error: NULL api name";
-		return apiproc;
+		return nullptr;
 	}
 
 	// Check API address
 	if (!apiproc)
 	{
 		Logging::Log() << __FUNCTION__ << " Error: Failed to find '" << apiname << "' api";
-		return apiproc;
+		return nullptr;
 	}
 
 	// Check hook address
 	if (!hookproc)
 	{
 		Logging::Log() << __FUNCTION__ << " Error: Invalid hook address for '" << apiname << "'";
-		return apiproc;
+		return nullptr;
 	}
 
 	// Try HotPatch first
@@ -66,14 +66,14 @@ void *Hook::HookAPI(HMODULE module, const char *dll, void *apiproc, const char *
 	if (!dll)
 	{
 		Logging::Log() << __FUNCTION__ << " Error: NULL dll name";
-		return apiproc;
+		return nullptr;
 	}
 
 	// Check module addresses
 	if (!module)
 	{
 		Logging::Log() << __FUNCTION__ << " Error: NULL api module address for '" << dll << "'";
-		return apiproc;
+		return nullptr;
 	}
 
 	// Try IATPatch next
@@ -84,7 +84,7 @@ void *Hook::HookAPI(HMODULE module, const char *dll, void *apiproc, const char *
 	}
 
 	// Return default address
-	return apiproc;
+	return nullptr;
 }
 
 // Unhook API

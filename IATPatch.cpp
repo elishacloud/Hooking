@@ -17,6 +17,11 @@
 * https://sourceforge.net/projects/dxwnd/
 */
 
+// return:
+// 0 = patch failed
+// 1 = already patched
+// addr = address of the original function
+
 #define WIN32_LEAN_AND_MEAN
 #include <vector>
 #include "Hook.h"
@@ -48,11 +53,6 @@ namespace Hook
 	}
 }
 
-// return:
-// 0 = patch failed
-// 1 = already patched
-// addr = address of the original function
-
 // Hook API using IAT patch
 void *Hook::IATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apiproc, const char *apiname, void *hookproc)
 {
@@ -70,35 +70,35 @@ void *Hook::IATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apipr
 	if (!dll)
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: NULL dll name");
-		return apiproc;
+		return nullptr;
 	}
 
 	// Check if API name is blank
 	if (!apiname)
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: NULL api name");
-		return apiproc;
+		return nullptr;
 	}
 
 	// Check module addresses
 	if (!module)
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: NULL api module address for '%s'", apiname);
-		return apiproc;
+		return nullptr;
 	}
 
 	// Check API address
 	if (!apiproc)
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: Failed to find '%s' api", apiname);
-		return apiproc;
+		return nullptr;
 	}
 
 	// Check hook address
 	if (!hookproc)
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: Invalid hook address for '%s'", apiname);
-		return apiproc;
+		return nullptr;
 	}
 
 #ifdef _DEBUG
@@ -114,13 +114,13 @@ void *Hook::IATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apipr
 		if (!pnth)
 		{
 			Logging::LogFormat(__FUNCTION__ ": ERROR no PNTH at %d", __LINE__);
-			return 0;
+			return nullptr;
 		}
 		rva = pnth->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
 		if (!rva)
 		{
 			Logging::LogFormat(__FUNCTION__ ": ERROR no RVA at %d", __LINE__);
-			return 0;
+			return nullptr;
 		}
 		pidesc = (PIMAGE_IMPORT_DESCRIPTOR)(base + rva);
 
@@ -217,7 +217,7 @@ void *Hook::IATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apipr
 #ifdef _DEBUG
 						Logging::LogFormat(__FUNCTION__ ": VirtualProtect error %d at %d", GetLastError(), __LINE__);						
 #endif
-						return 0;
+						return nullptr;
 					}
 					ptaddr->u1.Function = (DWORD)hookproc;
 					if (!VirtualProtect(&ptaddr->u1.Function, 4, oldprotect, &oldprotect))
@@ -225,14 +225,14 @@ void *Hook::IATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apipr
 #ifdef _DEBUG
 						Logging::LogFormat(__FUNCTION__ ": VirtualProtect error %d at %d", GetLastError(), __LINE__);						
 #endif
-						return 0;
+						return nullptr;
 					}
 					if (!FlushInstructionCache(GetCurrentProcess(), &ptaddr->u1.Function, 4))
 					{
 #ifdef _DEBUG
 						Logging::LogFormat(__FUNCTION__ ": FlushInstructionCache error %d at %d", GetLastError(), __LINE__);						
 #endif
-						return 0;
+						return nullptr;
 					}
 #ifdef _DEBUG
 					Logging::LogFormat(__FUNCTION__ " hook=%s address=%p->%p", apiname, org, hookproc);					
@@ -251,7 +251,7 @@ void *Hook::IATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apipr
 #ifdef _DEBUG
 			Logging::LogFormat(__FUNCTION__ ": PE unreferenced function %s:%s", dll, apiname);			
 #endif
-			return 0;
+			return nullptr;
 		}
 
 	}

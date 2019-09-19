@@ -26,17 +26,83 @@
 #include <vector>
 #include "Hook.h"
 
+constexpr DWORD buff_size = 12;
+
 namespace Hook
 {
 	struct HOTPATCH
 	{
-		BYTE lpOrgBuffer[12];
-		BYTE lpNewBuffer[12];
+		BYTE lpOrgBuffer[buff_size];
+		BYTE lpNewBuffer[buff_size];
 		void* procaddr = nullptr;
 		void* alocmemaddr = nullptr;
 	};
 
 	std::vector<HOTPATCH> HotPatchProcs;
+
+	void *RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *apiname, void *hookproc, DWORD ByteNum);
+}
+
+void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *apiname, void *hookproc, DWORD ByteNum)
+{
+	if (!patch_address || !dwPrevProtect || !apiname || !hookproc || ByteNum < 5)
+	{
+		Logging::Log() << __FUNCTION__ " Error: Invalid input!";
+		return nullptr;
+	}
+
+	// Create new memory and prepare to patch
+	DWORD mem_size = (((ByteNum + 5) / 8) + 1) * 8;
+	BYTE *new_mem = (BYTE*)VirtualAlloc(nullptr, mem_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	DWORD dwNull = 0;
+	if (!new_mem || !VirtualProtect(new_mem, mem_size, PAGE_EXECUTE_READWRITE, &dwNull))
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot mark memory as executable api=%s at addr=%p err=%x", apiname, new_mem, GetLastError());
+
+		if (new_mem)
+		{
+			VirtualFree(new_mem, 0, MEM_RELEASE);
+		}
+
+		// Restore protection
+		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwNull);
+
+		return nullptr; // access denied
+	}
+	memset(new_mem, 0x90, mem_size);
+
+	// Write old data to new memory before overwritting it
+	memcpy(new_mem, patch_address + 5, ByteNum);
+	*(new_mem + ByteNum) = 0xE9; // jmp (4-byte relative)
+	*((DWORD *)(new_mem + ByteNum + 1)) = (DWORD)patch_address - (DWORD)new_mem; // relative address
+
+	// Backup memory
+	HOTPATCH tmpMemory;
+	tmpMemory.procaddr = patch_address;
+	tmpMemory.alocmemaddr = new_mem;
+	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, buff_size, nullptr);
+
+	// Set HotPatch hook
+	*(patch_address + 5) = 0xE9; // jmp (4-byte relative)
+	*((DWORD *)(patch_address + 6)) = (DWORD)hookproc - (DWORD)patch_address - 10; // relative address
+
+	// Get memory after update
+	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, buff_size, nullptr);
+
+	// Save memory
+	HotPatchProcs.push_back(tmpMemory);
+
+	// Restore protection
+	VirtualProtect(new_mem, mem_size, dwPrevProtect, &dwNull);
+	VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwNull);
+
+	// Flush cache
+	FlushInstructionCache(GetCurrentProcess(), new_mem, mem_size);
+	FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
+#ifdef _DEBUG
+	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
+#endif
+	return new_mem;
 }
 
 // Hook API using hot patch
@@ -54,21 +120,21 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	if (!apiproc)
 	{
 		Logging::Log() << __FUNCTION__ << " Error: Failed to find '" << apiname << "' api";
-		return apiproc;
+		return nullptr;
 	}
 
 	// Check hook address
 	if (!hookproc)
 	{
 		Logging::Log() << __FUNCTION__ << " Error: Invalid hook address for '" << apiname << "'";
-		return apiproc;
+		return nullptr;
 	}
 
 	patch_address = ((BYTE *)apiproc) - 5;
 	orig_address = (BYTE *)apiproc + 2;
 
 	// Entry point could be at the top of a page? so VirtualProtect first to make sure patch_address is readable
-	if (!VirtualProtect(patch_address, 12, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
+	if (!VirtualProtect(patch_address, buff_size, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot hook api=%s at addr=%p err=%x", apiname, apiproc, GetLastError());
 		return nullptr; // access denied
@@ -84,7 +150,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		// Backup memory
 		HOTPATCH tmpMemory;
 		tmpMemory.procaddr = patch_address;
-		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, 12, nullptr);
+		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, buff_size, nullptr);
 
 		// Set HotPatch hook
 		*patch_address = 0xE9; // jmp (4-byte relative)
@@ -92,16 +158,16 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		*((WORD *)apiproc) = 0xF9EB; // should be atomic write (jmp $-5)
 
 		// Get memory after update
-		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, 12, nullptr);
+		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, buff_size, nullptr);
 
 		// Save memory
 		HotPatchProcs.push_back(tmpMemory);
 
 		// Restore protection
-		VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
+		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
 
 		// Flush cache
-		FlushInstructionCache(GetCurrentProcess(), patch_address, 12);
+		FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
 #ifdef _DEBUG
 		Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
 #endif
@@ -109,64 +175,18 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	}
 
 	// Check for common 7-byte assembly header
-	else if (!memcmp("\x90\x90\x90\x90\x90\x90\x90", patch_address + 5, 7) || !memcmp("\xCC\xCC\xCC\xCC\xCC\xCC\xCC", patch_address + 5, 7) ||
-		(!memcmp("\xB8", patch_address + 5, 1) && !memcmp("\xC2", patch_address + 10, 1)) ||
-		(!memcmp("\x8D\x4C\x24", patch_address + 5, 3) && !memcmp("\x83\xE4", patch_address + 9, 2)) ||
+	else if ((!memcmp("\x8D\x4C\x24", patch_address + 5, 3) && !memcmp("\x83\xE4", patch_address + 9, 2)) ||
 		!memcmp("\xF6\x05", patch_address + 5, 2))
 	{
-		// Create new memory an prepare to patch
-		BYTE *NewMem = (BYTE*)VirtualAlloc(nullptr, 16, MEM_COMMIT, PAGE_READWRITE);
-		DWORD dwNull = 0;
-		if (!NewMem || !VirtualProtect(NewMem, 16, PAGE_EXECUTE_READWRITE, &dwNull))
-		{
-			Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot mark memory as executable api=%s at addr=%p err=%x", apiname, NewMem, GetLastError());
+		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 7);
+	}
 
-			if (NewMem)
-			{
-				VirtualFree(NewMem, 0, MEM_RELEASE);
-			}
-
-			// Restore protection
-			VirtualProtect(patch_address, 12, dwPrevProtect, &dwNull);
-
-			return nullptr; // access denied
-		}
-
-		// Write old data to new memory before overwritting it
-		memcpy(NewMem, patch_address + 5, 7);
-		*(NewMem + 8) = 0xE9; // jmp (4-byte relative)
-		*((DWORD *)(NewMem + 9)) = (DWORD)patch_address - (DWORD)NewMem; // relative address
-
-		// Backup memory
-		HOTPATCH tmpMemory;
-		tmpMemory.procaddr = patch_address;
-		tmpMemory.alocmemaddr = NewMem;
-		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, 12, nullptr);
-
-		// Set HotPatch hook
-		*(patch_address + 5) = 0xE9; // jmp (4-byte relative)
-		*((DWORD *)(patch_address + 6)) = (DWORD)hookproc - (DWORD)patch_address - 10; // relative address
-		*(patch_address + 10) = 0x90; // nop
-		*(patch_address + 11) = 0x90; // nop
-		*(patch_address + 12) = 0x90; // nop
-
-		// Get memory after update
-		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, 12, nullptr);
-
-		// Save memory
-		HotPatchProcs.push_back(tmpMemory);
-
-		// Restore protection
-		VirtualProtect(NewMem, 16, dwPrevProtect, &dwNull);
-		VirtualProtect(patch_address, 12, dwPrevProtect, &dwNull);
-
-		// Flush cache
-		FlushInstructionCache(GetCurrentProcess(), NewMem, 16);
-		FlushInstructionCache(GetCurrentProcess(), patch_address, 12);
-#ifdef _DEBUG
-		Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
-#endif
-		return NewMem;
+	// Check for common 5-byte assembly header
+	else if (!memcmp("\x90\x90\x90\x90\x90", patch_address + 5, 5) ||
+		!memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address + 5, 5) ||
+		!memcmp("\xB8", patch_address + 5, 1))
+	{
+		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 5);
 	}
 
 	// Check if API is just a pointer to another API
@@ -177,7 +197,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		memcpy(&patchAddr, ((BYTE*)apiproc + 2), sizeof(DWORD));
 
 		// Restore protection
-		VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
+		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
 
 #ifdef _DEBUG
 		Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
@@ -190,7 +210,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	else
 	{
 		// Restore protection
-		VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
+		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
 
 		// check it wasn't patched already
 		if ((*patch_address == 0xE9) && (*(WORD *)apiproc == 0xF9EB))
@@ -204,14 +224,18 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 			Logging::LogFormat(__FUNCTION__ " Error: '%s' is not patch aware at addr=%p", apiname, apiproc);
 
 			// Log memory
-			BYTE lpBuffer[12];
-			if (ReadProcessMemory(GetCurrentProcess(), patch_address, lpBuffer, 12, nullptr))
+			BYTE lpBuffer[buff_size];
+			if (ReadProcessMemory(GetCurrentProcess(), patch_address, lpBuffer, buff_size, nullptr))
 			{
-				char buffer[120] = { '\0' };
-				sprintf_s(buffer, "Bytes in memory are: \\x%02X\\x%02X\\x%02X\\x%02X\\x%02X\\x%02X\\x%02X\\x%02X\\x%02X\\x%02X\\x%02X\\x%02X",
-					lpBuffer[0], lpBuffer[1], lpBuffer[2], lpBuffer[3],
-					lpBuffer[4], lpBuffer[5], lpBuffer[6], lpBuffer[7],
-					lpBuffer[8], lpBuffer[9], lpBuffer[10], lpBuffer[11]);
+				const size_t size = buff_size * 4 + 40;
+				char buffer[size] = { '\0' };
+				strcpy_s(buffer, size, "Bytes in memory are: ");
+				char tmpbuffer[8] = { '\0' };
+				for (int x = 0; x < buff_size; x++)
+				{
+					sprintf_s(tmpbuffer, "\\x%02X", lpBuffer[x]);
+					strcat_s(buffer, size, tmpbuffer);
+				}
 				Logging::LogFormat(buffer);
 			}
 
@@ -224,21 +248,21 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 bool Hook::UnHotPatchAll()
 {
 	bool flag = true;
-	BYTE lpBuffer[12];
+	BYTE lpBuffer[buff_size];
 	while (HotPatchProcs.size() != 0)
 	{
 		// VirtualProtect first to make sure patch_address is readable
 		DWORD dwPrevProtect;
-		if (VirtualProtect(HotPatchProcs.back().procaddr, 12, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
+		if (VirtualProtect(HotPatchProcs.back().procaddr, buff_size, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
 		{
 			// Read memory
-			if (ReadProcessMemory(GetCurrentProcess(), HotPatchProcs.back().procaddr, lpBuffer, 12, nullptr))
+			if (ReadProcessMemory(GetCurrentProcess(), HotPatchProcs.back().procaddr, lpBuffer, buff_size, nullptr))
 			{
 				// Check if memory is as expected
-				if (!memcmp(lpBuffer, HotPatchProcs.back().lpNewBuffer, 12))
+				if (!memcmp(lpBuffer, HotPatchProcs.back().lpNewBuffer, buff_size))
 				{
 					// Write to memory
-					memcpy(HotPatchProcs.back().procaddr, HotPatchProcs.back().lpOrgBuffer, 12);
+					memcpy(HotPatchProcs.back().procaddr, HotPatchProcs.back().lpOrgBuffer, buff_size);
 				}
 				else
 				{
@@ -255,10 +279,10 @@ bool Hook::UnHotPatchAll()
 			}
 
 			// Restore protection
-			VirtualProtect(HotPatchProcs.back().procaddr, 12, dwPrevProtect, &dwPrevProtect);
+			VirtualProtect(HotPatchProcs.back().procaddr, buff_size, dwPrevProtect, &dwPrevProtect);
 
 			// Flush cache
-			FlushInstructionCache(GetCurrentProcess(), HotPatchProcs.back().procaddr, 12);
+			FlushInstructionCache(GetCurrentProcess(), HotPatchProcs.back().procaddr, buff_size);
 		}
 		else
 		{
@@ -292,38 +316,38 @@ bool Hook::UnhookHotPatch(void *apiproc, const char *apiname, void *hookproc)
 	orig_address = (BYTE *)apiproc + 2;
 
 	// Check if this address is stored in the vector and restore memory
-	BYTE lpBuffer[12];
+	BYTE lpBuffer[buff_size];
 	for (UINT x = 0; x < HotPatchProcs.size(); ++x)
 	{
 		// Check for address
 		if (HotPatchProcs[x].procaddr == patch_address)
 		{
 			// VirtualProtect first to make sure patch_address is readable
-			if (VirtualProtect(HotPatchProcs[x].procaddr, 12, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
+			if (VirtualProtect(HotPatchProcs[x].procaddr, buff_size, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
 			{
 				// Read memory
-				if (ReadProcessMemory(GetCurrentProcess(), HotPatchProcs[x].procaddr, lpBuffer, 12, nullptr))
+				if (ReadProcessMemory(GetCurrentProcess(), HotPatchProcs[x].procaddr, lpBuffer, buff_size, nullptr))
 				{
 					// Check if memory is as expected
-					if (!memcmp(lpBuffer, HotPatchProcs[x].lpNewBuffer, 12))
+					if (!memcmp(lpBuffer, HotPatchProcs[x].lpNewBuffer, buff_size))
 					{
 						// Write to memory
-						memcpy(HotPatchProcs[x].procaddr, HotPatchProcs[x].lpOrgBuffer, 12);
+						memcpy(HotPatchProcs[x].procaddr, HotPatchProcs[x].lpOrgBuffer, buff_size);
 
 						// If not at the end then move back to current loc and pop_back
 						if (x + 1 != HotPatchProcs.size())
 						{
 							HotPatchProcs[x].procaddr = HotPatchProcs.back().procaddr;
-							memcpy(HotPatchProcs[x].lpOrgBuffer, HotPatchProcs.back().lpOrgBuffer, 12);
-							memcpy(HotPatchProcs[x].lpNewBuffer, HotPatchProcs.back().lpNewBuffer, 12);
+							memcpy(HotPatchProcs[x].lpOrgBuffer, HotPatchProcs.back().lpOrgBuffer, buff_size);
+							memcpy(HotPatchProcs[x].lpNewBuffer, HotPatchProcs.back().lpNewBuffer, buff_size);
 						}
 						HotPatchProcs.pop_back();
 
 						// Restore protection
-						VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
+						VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
 
 						// Flush cache
-						FlushInstructionCache(GetCurrentProcess(), patch_address, 12);
+						FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
 
 						// Return
 						return true;
@@ -331,13 +355,13 @@ bool Hook::UnhookHotPatch(void *apiproc, const char *apiname, void *hookproc)
 				}
 
 				// Restore protection
-				VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
+				VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
 			}
 		}
 	}
 
 	// Entry point could be at the top of a page? so VirtualProtect first to make sure patch_address is readable
-	if (!VirtualProtect(patch_address, 12, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
+	if (!VirtualProtect(patch_address, buff_size, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect))
 	{
 		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot hook api=%s at addr=%p err=%x", apiname, apiproc, GetLastError());
 		return false; // access denied
@@ -352,10 +376,10 @@ bool Hook::UnhookHotPatch(void *apiproc, const char *apiname, void *hookproc)
 		*((WORD *)(patch_address + 5)) = 0x9090; // 2 nops
 
 		// Restore protection
-		VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
+		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
 
 		// Flush cache
-		FlushInstructionCache(GetCurrentProcess(), patch_address, 12);
+		FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
 #ifdef _DEBUG
 		Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
 #endif
@@ -365,7 +389,7 @@ bool Hook::UnhookHotPatch(void *apiproc, const char *apiname, void *hookproc)
 	Logging::LogFormat(__FUNCTION__ " Error: failed to unhook '%s' at addr=%p", apiname, apiproc);
 
 	// Restore protection
-	VirtualProtect(patch_address, 12, dwPrevProtect, &dwPrevProtect);
+	VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
 #ifdef _DEBUG
 	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
 #endif
