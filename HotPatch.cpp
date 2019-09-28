@@ -100,7 +100,7 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 	FlushInstructionCache(GetCurrentProcess(), new_mem, mem_size);
 	FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
 #ifdef _DEBUG
-	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
+	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p headersize=%d hook=%p", apiname, (patch_address + 5), ByteNum, hookproc);
 #endif
 	return new_mem;
 }
