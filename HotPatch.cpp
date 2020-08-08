@@ -144,6 +144,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	if (!(memcmp("\x90\x90\x90\x90\x90\xEB\x05\x90\x90\x90\x90\x90", patch_address, 12) &&											// Some calls (QueryPerformanceCounter) are sort of hot patched already....
 		memcmp("\xCC\xCC\xCC\xCC\xCC\xEB\x05\xCC\xCC\xCC\xCC\xCC", patch_address, 12) &&											// For debugging
 		memcmp("\x90\x90\x90\x90\x90\x8B\xFF", patch_address, 7) && memcmp("\x90\x90\x90\x90\x90\x89\xFF", patch_address, 7) &&		// Make sure it is a hotpatchable image... check for 5 nops followed by mov edi,edi
+		memcmp("\x00\x00\x00\x00\x00\x8B\xFF", patch_address, 7) &&																	// Some API's use 0x00 rather than 0x90
 		memcmp("\xCC\xCC\xCC\xCC\xCC\x8B\xFF", patch_address, 7) && memcmp("\xCC\xCC\xCC\xCC\xCC\x89\xFF", patch_address, 7)) ||	// For debugging
 		((forcepatch && (!memcmp("\x90\x90\x90\x90\x90", patch_address, 5) || !memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address, 5)))))	// Force hook, overwrites data, patched function may not be usable
 	{
@@ -174,9 +175,15 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		return orig_address;
 	}
 
+	// Check for common 8-byte assembly header
+	else if (!memcmp("\x33\xC0\x39\x05", patch_address + 5, 4))
+	{
+		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 8);
+	}
+
 	// Check for common 7-byte assembly header
 	else if ((!memcmp("\x8D\x4C\x24", patch_address + 5, 3) && !memcmp("\x83\xE4", patch_address + 9, 2)) ||
-		!memcmp("\xF6\x05", patch_address + 5, 2))
+		!memcmp("\xF6\x05", patch_address + 5, 2) || !memcmp("\x55\x8B\xEC\x6A\xFF\x68\xD0", patch_address + 5, 7))
 	{
 		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 7);
 	}
@@ -184,7 +191,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	// Check for common 5-byte assembly header
 	else if (!memcmp("\x90\x90\x90\x90\x90", patch_address + 5, 5) ||
 		!memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address + 5, 5) ||
-		!memcmp("\xB8", patch_address + 5, 1))
+		!memcmp("\xB8", patch_address + 5, 1) || !memcmp("\xB9", patch_address + 5, 1))
 	{
 		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 5);
 	}
