@@ -20,7 +20,10 @@
 * http://www.rohitab.com/discuss/topic/40594-parsing-pe-export-table/
 */
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+
 #include <Windows.h>
 #include <stdio.h>
 #include <psapi.h>

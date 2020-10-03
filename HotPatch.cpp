@@ -22,7 +22,10 @@
 // 1 = already patched
 // addr = address of the original function
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+
 #include <vector>
 #include "Hook.h"
 
