@@ -1,5 +1,5 @@
 /**
-* Copyright (C) 2019 Elisha Riedlinger
+* Copyright (C) 2021 Elisha Riedlinger
 *
 * This software is  provided 'as-is', without any express  or implied  warranty. In no event will the
 * authors be held liable for any damages arising from the use of this software.
@@ -252,7 +252,7 @@ HMODULE Hook::GetModuleHandle(char* ProcName)
 				sizeof(szModName) / sizeof(char)))
 			{
 				// Check the module name.
-				if (!_strcmpi(ProcName, szModName))
+				if (!_stricmp(ProcName, szModName))
 				{
 					// Release the handle to the process.
 					CloseHandle(hProcess);
