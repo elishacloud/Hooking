@@ -194,6 +194,7 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	// Check for common 5-byte assembly header
 	else if (!memcmp("\x90\x90\x90\x90\x90", patch_address + 5, 5) ||
 		!memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address + 5, 5) ||
+		!memcmp("\x8B\xFF\x55\x8B\xEC", patch_address + 5, 5) ||
 		!memcmp("\x68", patch_address + 5, 1) ||
 		!memcmp("\xB8", patch_address + 5, 1) ||
 		!memcmp("\xB9", patch_address + 5, 1))
