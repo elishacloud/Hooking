@@ -197,7 +197,9 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		!memcmp("\x8B\xFF\x55\x8B\xEC", patch_address + 5, 5) ||
 		!memcmp("\x68", patch_address + 5, 1) ||
 		!memcmp("\xB8", patch_address + 5, 1) ||
-		!memcmp("\xB9", patch_address + 5, 1))
+		!memcmp("\xB9", patch_address + 5, 1) ||
+		!memcmp("\xE8", patch_address + 5, 1) ||
+		!memcmp("\xE9", patch_address + 5, 1))
 	{
 		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 5);
 	}
