@@ -79,6 +79,13 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 	*(new_mem + ByteNum) = 0xE9; // jmp (4-byte relative)
 	*((DWORD *)(new_mem + ByteNum + 1)) = (DWORD)patch_address - (DWORD)new_mem; // relative address
 
+	// Special handling for 5-byte assembly header (call/jmp)
+	if (!memcmp("\xE8", new_mem, 1) || !memcmp("\xE9", new_mem, 1))
+	{
+		BYTE* CallJmpAddress = (BYTE*)(*(DWORD*)(patch_address + 6) + (DWORD)patch_address + 10); // address to call/jmp
+		*((DWORD*)(new_mem + 1)) = (DWORD)CallJmpAddress - (DWORD)new_mem - 5; // relative address
+	}
+
 	// Backup memory
 	HOTPATCH tmpMemory;
 	tmpMemory.procaddr = patch_address;
@@ -355,6 +362,11 @@ bool Hook::UnhookHotPatch(void *apiproc, const char *apiname, void *hookproc)
 							HotPatchProcs[x].procaddr = HotPatchProcs.back().procaddr;
 							memcpy(HotPatchProcs[x].lpOrgBuffer, HotPatchProcs.back().lpOrgBuffer, buff_size);
 							memcpy(HotPatchProcs[x].lpNewBuffer, HotPatchProcs.back().lpNewBuffer, buff_size);
+						}
+						// Free VirtualAlloc memory
+						if (HotPatchProcs.back().alocmemaddr)
+						{
+							VirtualFree(HotPatchProcs.back().alocmemaddr, 0, MEM_RELEASE);
 						}
 						HotPatchProcs.pop_back();
 
