@@ -33,12 +33,12 @@ namespace Hook
 {
 	struct IATPATCH
 	{
-		HMODULE module;
-		DWORD ordinal;
+		HMODULE module = nullptr;
+		DWORD ordinal = 0;
 		std::string dll;
-		void *apiproc;
+		void *apiproc = nullptr;
 		std::string apiname;
-		void *hookproc;
+		void *hookproc = nullptr;
 	};
 
 	std::vector<IATPATCH> IATPatchProcs;

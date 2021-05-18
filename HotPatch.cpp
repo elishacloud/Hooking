@@ -35,8 +35,8 @@ namespace Hook
 {
 	struct HOTPATCH
 	{
-		BYTE lpOrgBuffer[buff_size];
-		BYTE lpNewBuffer[buff_size];
+		BYTE lpOrgBuffer[buff_size] = { 0x90 };
+		BYTE lpNewBuffer[buff_size] = { 0x90 };
 		void* procaddr = nullptr;
 		void* alocmemaddr = nullptr;
 	};
@@ -107,7 +107,6 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 	VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwNull);
 
 	// Flush cache
-	FlushInstructionCache(GetCurrentProcess(), new_mem, mem_size);
 	FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
 #ifdef _DEBUG
 	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p headersize=%d hook=%p", apiname, (patch_address + 5), ByteNum, hookproc);
