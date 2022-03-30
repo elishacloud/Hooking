@@ -1,5 +1,5 @@
 /**
-* Copyright (C) 2021 Elisha Riedlinger
+* Copyright (C) 2022 Elisha Riedlinger
 *
 * This software is  provided 'as-is', without any express  or implied  warranty. In no event will the
 * authors be held liable for any damages arising from the use of this software.
@@ -192,7 +192,8 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 
 	// Check for common 7-byte assembly header
 	else if ((!memcmp("\x8D\x4C\x24", patch_address + 5, 3) && !memcmp("\x83\xE4", patch_address + 9, 2)) ||
-		!memcmp("\xF6\x05", patch_address + 5, 2) || !memcmp("\x55\x8B\xEC\x6A\xFF\x68\xD0", patch_address + 5, 7))
+		!memcmp("\xF6\x05", patch_address + 5, 2) || !memcmp("\x55\x8B\xEC\x6A\xFF\x68\xD0", patch_address + 5, 7) ||
+		(!memcmp("\x6A", patch_address + 5, 1) && !memcmp("\x68", patch_address + 7, 1)))
 	{
 		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 7);
 	}
