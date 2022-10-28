@@ -29,7 +29,7 @@
 #include <vector>
 #include "Hook.h"
 
-constexpr DWORD buff_size = 12;
+constexpr DWORD buff_size = 14;
 
 namespace Hook
 {
@@ -48,7 +48,7 @@ namespace Hook
 
 void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *apiname, void *hookproc, DWORD ByteNum)
 {
-	if (!patch_address || !dwPrevProtect || !apiname || !hookproc || ByteNum < 5)
+	if (!patch_address || !dwPrevProtect || !apiname || !hookproc || ByteNum < 5 || ByteNum + 5 > buff_size)
 	{
 		Logging::Log() << __FUNCTION__ " Error: Invalid input!";
 		return nullptr;
@@ -95,6 +95,12 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 	// Set HotPatch hook
 	*(patch_address + 5) = 0xE9; // jmp (4-byte relative)
 	*((DWORD *)(patch_address + 6)) = (DWORD)hookproc - (DWORD)patch_address - 10; // relative address
+
+	// nop remaining bytes
+	if (ByteNum > 5)
+	{
+		memset((patch_address + 10), 0x90, ByteNum - 5);
+	}
 
 	// Get memory after update
 	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, buff_size, nullptr);
@@ -185,7 +191,8 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 	}
 
 	// Check for common 8-byte assembly header
-	else if (!memcmp("\x33\xC0\x39\x05", patch_address + 5, 4))
+	else if (!memcmp("\x33\xC0\x39\x05", patch_address + 5, 4) ||
+		!memcmp("\x8B\xFF\xFF\x25", patch_address + 5, 4))
 	{
 		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 8);
 	}
