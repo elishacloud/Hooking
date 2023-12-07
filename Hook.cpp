@@ -1,5 +1,5 @@
 /**
-* Copyright (C) 2022 Elisha Riedlinger
+* Copyright (C) 2023 Elisha Riedlinger
 *
 * This software is  provided 'as-is', without any express  or implied  warranty. In no event will the
 * authors be held liable for any damages arising from the use of this software.
@@ -142,12 +142,6 @@ void Hook::UnhookAPI(HMODULE module, const char *dll, void *apiproc, const char 
 // Get pointer for function name from binary file
 FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 {
-	PIMAGE_DOS_HEADER pIDH;
-	PIMAGE_NT_HEADERS pINH;
-	PIMAGE_EXPORT_DIRECTORY pIED;
-	PDWORD Address, Name;
-	PWORD Ordinal;
-
 	if (!FunctionName || !hModule)
 	{
 		Logging::LogFormat(__FUNCTION__ ": NULL module or function name.");
@@ -160,8 +154,8 @@ FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 
 	FARPROC functAddr = ::GetProcAddress(hModule, FunctionName);
 
-	__try {
-		pIDH = (PIMAGE_DOS_HEADER)hModule;
+	try {
+		PIMAGE_DOS_HEADER pIDH = (PIMAGE_DOS_HEADER)hModule;
 
 		if (pIDH->e_magic != IMAGE_DOS_SIGNATURE)
 		{
@@ -169,7 +163,7 @@ FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 			return functAddr;
 		}
 
-		pINH = (PIMAGE_NT_HEADERS)((LPBYTE)hModule + pIDH->e_lfanew);
+		PIMAGE_NT_HEADERS pINH = (PIMAGE_NT_HEADERS)((LPBYTE)hModule + pIDH->e_lfanew);
 
 		if (pINH->Signature != IMAGE_NT_SIGNATURE)
 		{
@@ -177,35 +171,122 @@ FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 			return functAddr;
 		}
 
-		if (pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress == 0)
+		if (pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress == 0 ||
+			pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size == 0)
 		{
 			Logging::LogFormat(__FUNCTION__ " Error: Could not get VirtualAddress in %s.", FunctionName);
 			return functAddr;
 		}
 
-		pIED = (PIMAGE_EXPORT_DIRECTORY)((LPBYTE)hModule + pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+		PIMAGE_EXPORT_DIRECTORY pIED = (PIMAGE_EXPORT_DIRECTORY)((LPBYTE)hModule +
+			pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
 
-		Address = (PDWORD)((LPBYTE)hModule + pIED->AddressOfFunctions);
-		Name = (PDWORD)((LPBYTE)hModule + pIED->AddressOfNames);
-		Ordinal = (PWORD)((LPBYTE)hModule + pIED->AddressOfNameOrdinals);
-
-		for (DWORD i = 0; i < pIED->AddressOfFunctions; i++)
+		if (pIED->NumberOfNames == 0 || pIED->NumberOfFunctions == 0)
 		{
-			if (!strcmp(FunctionName, (char*)hModule + Name[i]))
+			// No export names or functions available
+			Logging::LogFormat(__FUNCTION__ " Error: No export names or functions in %s.", FunctionName);
+			return functAddr;
+		}
+
+		PDWORD Address = (PDWORD)((LPBYTE)hModule + pIED->AddressOfFunctions);
+		PDWORD Name = (PDWORD)((LPBYTE)hModule + pIED->AddressOfNames);
+		PWORD Ordinals = (PWORD)((LPBYTE)hModule + pIED->AddressOfNameOrdinals);
+
+		for (DWORD i = 0; i < pIED->NumberOfFunctions; i++)
+		{
+			if (i < pIED->NumberOfNames)
 			{
-				return (FARPROC)((DWORD)Address[Ordinal[i]] + (DWORD)hModule);
+				const char* currentName = (char*)hModule + Name[i];
+				if (!strcmp(FunctionName, currentName))
+				{
+					return (FARPROC)((DWORD)Address[Ordinals[i]] + (DWORD)hModule);
+				}
 			}
 		}
 	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
+	catch (const std::exception& ex)
 	{
-		DWORD ErrorCode = GetExceptionCode();
-		Logging::LogFormat(__FUNCTION__ " Error: EXCEPTION module=%s Failed to get address. Code=%x", FunctionName, ErrorCode);
+		Logging::LogFormat(__FUNCTION__ " Error: Exception caught: %s", ex.what());
+	}
+	catch (...)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: Unknown exception caught.");
 	}
 
 	// Exit function
 	Logging::LogFormat(__FUNCTION__ " Error: Could not find %s.", FunctionName);
 	return functAddr;
+}
+
+// Get function name by ordinal from binary file
+bool Hook::CheckExportAddress(HMODULE hModule, void* AddressCheck)
+{
+	if (!hModule)
+	{
+		Logging::LogFormat(__FUNCTION__ ": NULL module.");
+		return false;
+	}
+
+#ifdef _DEBUG
+	Logging::LogFormat(__FUNCTION__ ": Checking address %p.", AddressCheck);
+#endif
+
+	try {
+		PIMAGE_DOS_HEADER pIDH = (PIMAGE_DOS_HEADER)hModule;
+
+		if (pIDH->e_magic != IMAGE_DOS_SIGNATURE)
+		{
+			Logging::LogFormat(__FUNCTION__ " Error: Module is not IMAGE_DOS_SIGNATURE.");
+			return false;
+		}
+
+		PIMAGE_NT_HEADERS pINH = (PIMAGE_NT_HEADERS)((LPBYTE)hModule + pIDH->e_lfanew);
+
+		if (pINH->Signature != IMAGE_NT_SIGNATURE)
+		{
+			Logging::LogFormat(__FUNCTION__ " Error: Module is not IMAGE_NT_SIGNATURE.");
+			return false;
+		}
+
+		if (pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress == 0 ||
+			pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size == 0)
+		{
+			Logging::LogFormat(__FUNCTION__ " Error: Could not get VirtualAddress.");
+			return false;
+		}
+
+		PIMAGE_EXPORT_DIRECTORY pIED = (PIMAGE_EXPORT_DIRECTORY)((LPBYTE)hModule +
+			pINH->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+
+		if (pIED->NumberOfFunctions == 0)
+		{
+			Logging::LogFormat(__FUNCTION__ " Error: No export functions in the module.");
+			return false;
+		}
+
+		PDWORD Address = (PDWORD)((LPBYTE)hModule + pIED->AddressOfFunctions);
+		PDWORD Name = (PDWORD)((LPBYTE)hModule + pIED->AddressOfNames);
+		PWORD Ordinals = (PWORD)((LPBYTE)hModule + pIED->AddressOfNameOrdinals);
+
+		for (DWORD i = 0; i < pIED->NumberOfFunctions; i++)
+		{
+			if (::GetProcAddress(hModule, (char*)hModule + Name[i]) == AddressCheck || (void*)((DWORD)Address[Ordinals[i]] + (DWORD)hModule) == AddressCheck)
+			{
+				return true;
+			}
+		}
+	}
+	catch (const std::exception& ex)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: Exception caught: %s", ex.what());
+	}
+	catch (...)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: Unknown exception caught.");
+	}
+
+	// Exit function
+	return false;
 }
 
 // Unhook all APIs

@@ -10,6 +10,7 @@
 namespace Hook
 {
 	FARPROC GetProcAddress(HMODULE, LPCSTR);
+	bool CheckExportAddress(HMODULE hModule, void* AddressCheck);
 	HMODULE GetModuleHandle(char*);
 
 	// Managed hooks
