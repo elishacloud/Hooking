@@ -154,7 +154,7 @@ FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 
 	FARPROC functAddr = ::GetProcAddress(hModule, FunctionName);
 
-	try {
+	__try {
 		PIMAGE_DOS_HEADER pIDH = (PIMAGE_DOS_HEADER)hModule;
 
 		if (pIDH->e_magic != IMAGE_DOS_SIGNATURE)
@@ -204,13 +204,10 @@ FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 			}
 		}
 	}
-	catch (const std::exception& ex)
+	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
-		Logging::LogFormat(__FUNCTION__ " Error: Exception caught: %s", ex.what());
-	}
-	catch (...)
-	{
-		Logging::LogFormat(__FUNCTION__ " Error: Unknown exception caught.");
+		DWORD ErrorCode = GetExceptionCode();
+		Logging::LogFormat(__FUNCTION__ " Error: Exception caught: %x", ErrorCode);
 	}
 
 	// Exit function
@@ -231,7 +228,7 @@ bool Hook::CheckExportAddress(HMODULE hModule, void* AddressCheck)
 	Logging::LogFormat(__FUNCTION__ ": Checking address %p.", AddressCheck);
 #endif
 
-	try {
+	__try {
 		PIMAGE_DOS_HEADER pIDH = (PIMAGE_DOS_HEADER)hModule;
 
 		if (pIDH->e_magic != IMAGE_DOS_SIGNATURE)
@@ -268,7 +265,7 @@ bool Hook::CheckExportAddress(HMODULE hModule, void* AddressCheck)
 		PDWORD Name = (PDWORD)((LPBYTE)hModule + pIED->AddressOfNames);
 		PWORD Ordinals = (PWORD)((LPBYTE)hModule + pIED->AddressOfNameOrdinals);
 
-		for (DWORD i = 0; i < pIED->NumberOfFunctions; i++)
+		for (DWORD i = 0; i < pIED->NumberOfNames; i++)
 		{
 			if (::GetProcAddress(hModule, (char*)hModule + Name[i]) == AddressCheck || (void*)((DWORD)Address[Ordinals[i]] + (DWORD)hModule) == AddressCheck)
 			{
@@ -276,13 +273,10 @@ bool Hook::CheckExportAddress(HMODULE hModule, void* AddressCheck)
 			}
 		}
 	}
-	catch (const std::exception& ex)
+	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
-		Logging::LogFormat(__FUNCTION__ " Error: Exception caught: %s", ex.what());
-	}
-	catch (...)
-	{
-		Logging::LogFormat(__FUNCTION__ " Error: Unknown exception caught.");
+		DWORD ErrorCode = GetExceptionCode();
+		Logging::LogFormat(__FUNCTION__ " Error: Exception caught: %x", ErrorCode);
 	}
 
 	// Exit function
