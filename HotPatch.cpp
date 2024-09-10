@@ -1,5 +1,5 @@
 /**
-* Copyright (C) 2023 Elisha Riedlinger
+* Copyright (C) 2024 Elisha Riedlinger
 *
 * This software is  provided 'as-is', without any express  or implied  warranty. In no event will the
 * authors be held liable for any damages arising from the use of this software.
@@ -43,7 +43,90 @@ namespace Hook
 
 	std::vector<HOTPATCH> HotPatchProcs;
 
-	void *RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *apiname, void *hookproc, DWORD ByteNum);
+	bool CheckPadding(BYTE* patch_address);
+	bool CheckStandardPadding(BYTE* patch_address);
+	void* OverwriteHeaderWithPadding(BYTE* patch_address, DWORD dwPrevProtect, const char* apiname, void* hookproc, DWORD ByteNum);
+	void* RewriteHeader(BYTE* patch_address, DWORD dwPrevProtect, const char* apiname, void* hookproc, DWORD ByteNum);
+}
+
+void *Hook::OverwriteHeaderWithPadding(BYTE* patch_address, DWORD dwPrevProtect, const char* apiname, void* hookproc, DWORD ByteNum)
+{
+	if (!patch_address || !dwPrevProtect || !apiname || !hookproc || ByteNum < 2 || ByteNum + 2 > buff_size)
+	{
+		Logging::Log() << __FUNCTION__ " Error: Invalid input!";
+		if (patch_address)
+		{
+			VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+		}
+		return nullptr;
+	}
+
+	// Create new memory and prepare to patch
+	DWORD mem_size = (((ByteNum + 5) / 8) + 2) * 8;
+	BYTE* new_mem = (BYTE*)VirtualAlloc(nullptr, mem_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	DWORD dwNull = 0;
+	if (!new_mem || !VirtualProtect(new_mem, mem_size, PAGE_EXECUTE_READWRITE, &dwNull))
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot mark memory as executable api=%s at addr=%p err=%x", apiname, new_mem, GetLastError());
+
+		if (new_mem)
+		{
+			VirtualFree(new_mem, 0, MEM_RELEASE);
+		}
+
+		// Restore protection
+		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+
+		return nullptr; // access denied
+	}
+	memset(new_mem, 0x90, mem_size);
+
+	// Special handling for 2-byte jmp header
+	if (memcmp("\xEB", (patch_address + 5), 1) == S_OK)
+	{
+		*((BYTE*)new_mem) = 0xE9; // jmp (5-byte relative)
+		BYTE* CallJmpAddress = (BYTE*)(*(BYTE*)(patch_address + 6) + (DWORD)patch_address + 7); // address to call/jmp
+		*((DWORD*)(new_mem + 1)) = (DWORD)CallJmpAddress - (DWORD)new_mem - 5; // relative address
+		*(new_mem + 6) = 0xE9; // jmp (5-byte relative)
+		*((DWORD*)(new_mem + 6 + 1)) = (DWORD)patch_address - (DWORD)new_mem; // relative address
+	}
+	// Write old data to new memory before overwritting it
+	else
+	{
+		memcpy(new_mem, patch_address + 5, ByteNum);
+		*(new_mem + ByteNum) = 0xE9; // jmp (4-byte relative)
+		*((DWORD*)(new_mem + ByteNum + 1)) = (DWORD)patch_address - (DWORD)new_mem; // relative address
+	}
+
+	// Backup memory
+	HOTPATCH tmpMemory;
+	tmpMemory.procaddr = patch_address;
+	tmpMemory.alocmemaddr = new_mem;
+	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, buff_size, nullptr);
+
+	// Overwrite with NOPs to align
+	memset(patch_address + 5, 0x90, ByteNum); // Overwrite remaining bytes with NOPs to align
+
+	// Set HotPatch hook
+	*patch_address = 0xE9; // jmp (4-byte relative)
+	*((DWORD*)(patch_address + 1)) = (DWORD)hookproc - (DWORD)patch_address - 5; // relative address
+	*((WORD*)(patch_address + 5)) = 0xF9EB; // should be atomic write (jmp $-5)
+
+	// Get memory after update
+	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, buff_size, nullptr);
+
+	// Save memory
+	HotPatchProcs.push_back(tmpMemory);
+
+	// Restore protection
+	VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+
+	// Flush cache
+	FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
+#ifdef _DEBUG
+	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p headersize=%d hook=%p", apiname, (patch_address + 5), ByteNum, hookproc);
+#endif
+	return new_mem;
 }
 
 void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *apiname, void *hookproc, DWORD ByteNum)
@@ -51,11 +134,15 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 	if (!patch_address || !dwPrevProtect || !apiname || !hookproc || ByteNum < 5 || ByteNum + 5 > buff_size)
 	{
 		Logging::Log() << __FUNCTION__ " Error: Invalid input!";
+		if (patch_address)
+		{
+			VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+		}
 		return nullptr;
 	}
 
 	// Create new memory and prepare to patch
-	DWORD mem_size = (((ByteNum + 5) / 8) + 1) * 8;
+	DWORD mem_size = (((ByteNum + 5) / 8) + 2) * 8;
 	BYTE *new_mem = (BYTE*)VirtualAlloc(nullptr, mem_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	DWORD dwNull = 0;
 	if (!new_mem || !VirtualProtect(new_mem, mem_size, PAGE_EXECUTE_READWRITE, &dwNull))
@@ -68,7 +155,7 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 		}
 
 		// Restore protection
-		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwNull);
+		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
 
 		return nullptr; // access denied
 	}
@@ -76,11 +163,11 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 
 	// Write old data to new memory before overwritting it
 	memcpy(new_mem, patch_address + 5, ByteNum);
-	*(new_mem + ByteNum) = 0xE9; // jmp (4-byte relative)
+	*(new_mem + ByteNum) = 0xE9; // jmp (5-byte relative)
 	*((DWORD *)(new_mem + ByteNum + 1)) = (DWORD)patch_address - (DWORD)new_mem; // relative address
 
 	// Special handling for 5-byte assembly header (call/jmp)
-	if (!memcmp("\xE8", new_mem, 1) || !memcmp("\xE9", new_mem, 1))
+	if (memcmp("\xE8", new_mem, 1) == S_OK || memcmp("\xE9", new_mem, 1) == S_OK)
 	{
 		BYTE* CallJmpAddress = (BYTE*)(*(DWORD*)(patch_address + 6) + (DWORD)patch_address + 10); // address to call/jmp
 		*((DWORD*)(new_mem + 1)) = (DWORD)CallJmpAddress - (DWORD)new_mem - 5; // relative address
@@ -92,15 +179,12 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 	tmpMemory.alocmemaddr = new_mem;
 	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, buff_size, nullptr);
 
+	// Overwrite with NOPs to align
+	memset(patch_address + 5, 0x90, ByteNum); // Overwrite bytes with NOPs to align
+
 	// Set HotPatch hook
 	*(patch_address + 5) = 0xE9; // jmp (4-byte relative)
-	*((DWORD *)(patch_address + 6)) = (DWORD)hookproc - (DWORD)patch_address - 10; // relative address
-
-	// nop remaining bytes
-	if (ByteNum > 5)
-	{
-		memset((patch_address + 10), 0x90, ByteNum - 5);
-	}
+	*((DWORD*)(patch_address + 6)) = (DWORD)hookproc - (DWORD)patch_address - 10; // relative address
 
 	// Get memory after update
 	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, buff_size, nullptr);
@@ -109,8 +193,7 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 	HotPatchProcs.push_back(tmpMemory);
 
 	// Restore protection
-	VirtualProtect(new_mem, mem_size, dwPrevProtect, &dwNull);
-	VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwNull);
+	VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
 
 	// Flush cache
 	FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
@@ -118,6 +201,19 @@ void *Hook::RewriteHeader(BYTE *patch_address, DWORD dwPrevProtect, const char *
 	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p headersize=%d hook=%p", apiname, (patch_address + 5), ByteNum, hookproc);
 #endif
 	return new_mem;
+}
+
+// Check patch address for padding
+bool Hook::CheckPadding(BYTE* patch_address)
+{
+	return (CheckStandardPadding(patch_address) ||							// Standard padding
+		memcmp("\x00\x00\x00\x00\x00", patch_address, 5) == S_OK);			// Alternative padding
+}
+
+bool Hook::CheckStandardPadding(BYTE* patch_address)
+{
+	return (memcmp("\x90\x90\x90\x90\x90", patch_address, 5) == S_OK ||		// Normal padding
+		memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address, 5) == S_OK);			// Debug padding
 }
 
 // Hook API using hot patch
@@ -155,122 +251,93 @@ void *Hook::HotPatch(void *apiproc, const char *apiname, void *hookproc, bool fo
 		return nullptr; // access denied
 	}
 
-	// Check if API can be patched
-	if (!(memcmp("\x90\x90\x90\x90\x90\xEB\x05\x90\x90\x90\x90\x90", patch_address, 12) &&											// Some calls (QueryPerformanceCounter) are sort of hot patched already....
-		memcmp("\xCC\xCC\xCC\xCC\xCC\xEB\x05\xCC\xCC\xCC\xCC\xCC", patch_address, 12) &&											// For debugging
-		memcmp("\x90\x90\x90\x90\x90\x8B\xFF", patch_address, 7) && memcmp("\x90\x90\x90\x90\x90\x89\xFF", patch_address, 7) &&		// Make sure it is a hotpatchable image... check for 5 nops followed by mov edi,edi
-		memcmp("\x00\x00\x00\x00\x00\x8B\xFF", patch_address, 7) &&																	// Some API's use 0x00 rather than 0x90
-		memcmp("\xCC\xCC\xCC\xCC\xCC\x8B\xFF", patch_address, 7) && memcmp("\xCC\xCC\xCC\xCC\xCC\x89\xFF", patch_address, 7)) ||	// For debugging
-		((forcepatch && (!memcmp("\x90\x90\x90\x90\x90", patch_address, 5) || !memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address, 5)))))	// Force hook, overwrites data, patched function may not be usable
+	// Check if API can be patched, common 2-byte assembly header
+	if (CheckPadding(patch_address) &&										// Check for byte padding
+		(memcmp("\x89\xFF", patch_address + 5, 2) == S_OK ||				// 2-byte assembly header (mov edi, edi)
+		memcmp("\xEB", patch_address + 5, 1) == S_OK))						// 2-byte jmp header
 	{
-		// Backup memory
-		HOTPATCH tmpMemory;
-		tmpMemory.procaddr = patch_address;
-		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, buff_size, nullptr);
+		return OverwriteHeaderWithPadding(patch_address, dwPrevProtect, apiname, hookproc, 2);
+	}
 
-		// Set HotPatch hook
-		*patch_address = 0xE9; // jmp (4-byte relative)
-		*((DWORD *)(patch_address + 1)) = (DWORD)hookproc - (DWORD)patch_address - 5; // relative address
-		*((WORD *)apiproc) = 0xF9EB; // should be atomic write (jmp $-5)
-
-		// Get memory after update
-		ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, buff_size, nullptr);
-
-		// Save memory
-		HotPatchProcs.push_back(tmpMemory);
-
-		// Restore protection
-		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
-
-		// Flush cache
-		FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
-#ifdef _DEBUG
-		Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
-#endif
-		return orig_address;
+	// Check if API can be patched, common 3-byte assembly header
+	else if (CheckPadding(patch_address) &&									// Check for byte padding
+		(memcmp("\x55\x89\xE5", patch_address + 5, 3) == S_OK))				// Common 3-byte assembly header
+	{
+		return OverwriteHeaderWithPadding(patch_address, dwPrevProtect, apiname, hookproc, 3);
 	}
 
 	// Check for common 8-byte assembly header
-	else if (!memcmp("\x33\xC0\x39\x05", patch_address + 5, 4) ||
-		!memcmp("\x8B\xFF\xFF\x25", patch_address + 5, 4))
+	else if (memcmp("\x33\xC0\x39\x05", patch_address + 5, 4) == S_OK ||
+		memcmp("\x8B\xFF\xFF\x25", patch_address + 5, 4) == S_OK)
 	{
 		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 8);
 	}
 
 	// Check for common 7-byte assembly header
-	else if ((!memcmp("\x8D\x4C\x24", patch_address + 5, 3) && !memcmp("\x83\xE4", patch_address + 9, 2)) ||
-		!memcmp("\xF6\x05", patch_address + 5, 2) || !memcmp("\x55\x8B\xEC\x6A\xFF\x68\xD0", patch_address + 5, 7) ||
-		(!memcmp("\x6A", patch_address + 5, 1) && !memcmp("\x68", patch_address + 7, 1)))
+	else if ((memcmp("\x8D\x4C\x24", patch_address + 5, 3) == S_OK && memcmp("\x83\xE4", patch_address + 9, 2) == S_OK) ||
+		memcmp("\xF6\x05", patch_address + 5, 2) == S_OK ||
+		memcmp("\x55\x8B\xEC\x6A\xFF\x68\xD0", patch_address + 5, 7) == S_OK ||
+		(memcmp("\x6A", patch_address + 5, 1) == S_OK && memcmp("\x68", patch_address + 7, 1) == S_OK))
 	{
 		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 7);
 	}
 
+	// Check for common 6-byte assembly header
+	else if (memcmp("\xFF\x25", patch_address + 5, 2) == S_OK)
+	{
+		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 6);
+	}
+
 	// Check for common 5-byte assembly header
-	else if (!memcmp("\x90\x90\x90\x90\x90", patch_address + 5, 5) ||
-		!memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address + 5, 5) ||
-		!memcmp("\x8B\xFF\x55\x8B\xEC", patch_address + 5, 5) ||
-		!memcmp("\x68", patch_address + 5, 1) ||
-		!memcmp("\xB8", patch_address + 5, 1) ||
-		!memcmp("\xB9", patch_address + 5, 1) ||
-		!memcmp("\xE8", patch_address + 5, 1) ||
-		!memcmp("\xE9", patch_address + 5, 1))
+	else if (memcmp("\x90\x90\x90\x90\x90", patch_address + 5, 5) == S_OK ||
+		memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address + 5, 5) == S_OK ||
+		memcmp("\x8B\xFF\x55\x8B\xEC", patch_address + 5, 5) == S_OK ||
+		memcmp("\x68", patch_address + 5, 1) == S_OK ||
+		memcmp("\xB8", patch_address + 5, 1) == S_OK ||
+		memcmp("\xB9", patch_address + 5, 1) == S_OK ||
+		memcmp("\xE8", patch_address + 5, 1) == S_OK ||
+		memcmp("\xE9", patch_address + 5, 1) == S_OK)
 	{
 		return RewriteHeader(patch_address, dwPrevProtect, apiname, hookproc, 5);
 	}
 
-	// Check if API is just a pointer to another API
-	else if (!(memcmp("\x90\x90\x90\x90\x90\xFF\x25", patch_address, 7) && memcmp("\xCC\xCC\xCC\xCC\xCC\xFF\x25", patch_address, 7)))
+	// Force patch with sufficient padding
+	else if (forcepatch && CheckStandardPadding(patch_address))
 	{
-		// Get memory address to function
-		DWORD *patchAddr;
-		memcpy(&patchAddr, ((BYTE*)apiproc + 2), sizeof(DWORD));
-
-		// Restore protection
-		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
-
-#ifdef _DEBUG
-		Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p->%p hook=%p", apiname, apiproc, orig_address, hookproc);
-#endif
-
-		return HotPatch((void*)(*patchAddr), apiname, hookproc);
+		return OverwriteHeaderWithPadding(patch_address, dwPrevProtect, apiname, hookproc, 2);
 	}
 
-	// API cannot be patched
+	// API cannot be patched restore protection
+	VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+
+	// check it wasn't patched already
+	if (*patch_address == 0xE9 && *(WORD *)apiproc == 0xF9EB)
+	{
+		// should never go through here ...
+		Logging::LogFormat(__FUNCTION__ " Error: '%s' patched already at addr=%p", apiname, apiproc);
+	}
 	else
 	{
-		// Restore protection
-		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+		Logging::LogFormat(__FUNCTION__ " Error: '%s' is not patch aware at addr=%p", apiname, apiproc);
 
-		// check it wasn't patched already
-		if ((*patch_address == 0xE9) && (*(WORD *)apiproc == 0xF9EB))
+		// Log memory
+		BYTE lpBuffer[buff_size];
+		if (ReadProcessMemory(GetCurrentProcess(), patch_address, lpBuffer, buff_size, nullptr))
 		{
-			// should never go through here ...
-			Logging::LogFormat(__FUNCTION__ " Error: '%s' patched already at addr=%p", apiname, apiproc);
-			return (void *)1;
-		}
-		else
-		{
-			Logging::LogFormat(__FUNCTION__ " Error: '%s' is not patch aware at addr=%p", apiname, apiproc);
-
-			// Log memory
-			BYTE lpBuffer[buff_size];
-			if (ReadProcessMemory(GetCurrentProcess(), patch_address, lpBuffer, buff_size, nullptr))
+			const size_t size = buff_size * 4 + 40;
+			char buffer[size] = { '\0' };
+			strcpy_s(buffer, size, "Bytes in memory are: ");
+			char tmpbuffer[8] = { '\0' };
+			for (int x = 0; x < buff_size; x++)
 			{
-				const size_t size = buff_size * 4 + 40;
-				char buffer[size] = { '\0' };
-				strcpy_s(buffer, size, "Bytes in memory are: ");
-				char tmpbuffer[8] = { '\0' };
-				for (int x = 0; x < buff_size; x++)
-				{
-					sprintf_s(tmpbuffer, "\\x%02X", lpBuffer[x]);
-					strcat_s(buffer, size, tmpbuffer);
-				}
-				Logging::LogFormat(buffer);
+				sprintf_s(tmpbuffer, "\\x%02X", lpBuffer[x]);
+				strcat_s(buffer, size, tmpbuffer);
 			}
-
-			return nullptr; // not hot patch "aware"
+			Logging::LogFormat(buffer);
 		}
 	}
+
+	return nullptr;
 }
 
 // Restore all addresses hooked
@@ -288,7 +355,7 @@ bool Hook::UnHotPatchAll()
 			if (ReadProcessMemory(GetCurrentProcess(), HotPatchProcs.back().procaddr, lpBuffer, buff_size, nullptr))
 			{
 				// Check if memory is as expected
-				if (!memcmp(lpBuffer, HotPatchProcs.back().lpNewBuffer, buff_size))
+				if (memcmp(lpBuffer, HotPatchProcs.back().lpNewBuffer, buff_size) == S_OK)
 				{
 					// Write to memory
 					memcpy(HotPatchProcs.back().procaddr, HotPatchProcs.back().lpOrgBuffer, buff_size);
@@ -358,7 +425,7 @@ bool Hook::UnhookHotPatch(void *apiproc, const char *apiname, void *hookproc)
 				if (ReadProcessMemory(GetCurrentProcess(), HotPatchProcs[x].procaddr, lpBuffer, buff_size, nullptr))
 				{
 					// Check if memory is as expected
-					if (!memcmp(lpBuffer, HotPatchProcs[x].lpNewBuffer, buff_size))
+					if (memcmp(lpBuffer, HotPatchProcs[x].lpNewBuffer, buff_size) == S_OK)
 					{
 						// Write to memory
 						memcpy(HotPatchProcs[x].procaddr, HotPatchProcs[x].lpOrgBuffer, buff_size);
