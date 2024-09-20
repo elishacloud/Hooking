@@ -13,8 +13,8 @@
 *      being the original software.
 *   3. This notice may not be removed or altered from any source distribution.
 *
-* Created from source code found in DDrawCompat v0.5.4
-* https://github.com/narzoul/DDrawCompat
+* Created from source code found in DxWnd v2.03.99
+* https://sourceforge.net/projects/dxwnd/
 */
 
 // return:
@@ -29,54 +29,58 @@
 #include <sstream>
 #include <string>
 #include "Hook.h"
-#include "Disasm.h"
 #include "Disasm.cpp"
 
 namespace Hook
 {
-	HMODULE GetCurrentDll();
-	std::string getModulePath(HMODULE module);
-	HMODULE getModuleHandleFromAddress(const void* address);
-	std::string funcPtrToStr(const void* funcPtr);
-}
+	constexpr DWORD buff_size = 21;
 
-HMODULE Hook::GetCurrentDll()
-{
-	static HMODULE hModule = nullptr;
-	if (!hModule)
+	struct HOTPATCH
 	{
-		if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-			reinterpret_cast<LPCWSTR>(&GetCurrentDll), &hModule))
-		{
-			return nullptr;
-		}
-	}
-	return hModule;
+		BYTE lpOrgBuffer[buff_size] = { 0x90 };
+		BYTE lpNewBuffer[buff_size] = { 0x90 };
+		void* procaddr = nullptr;
+		void* alocmemaddr = nullptr;
+	};
+
+	bool IsUnsupportedInstruction(BYTE* src);
+	bool CheckPadding(BYTE* patch_address);
+	std::string funcPtrToStr(const void* funcPtr);
+	void* OverwriteHeaderWithPadding(BYTE* patch_address, const char* apiname, void* hookproc, DWORD ByteNum);
+	void* RewriteHeader(BYTE* patch_address, const char* apiname, void* hookproc, DWORD ByteNum);
 }
 
-std::string Hook::getModulePath(HMODULE module)
+inline bool Hook::IsUnsupportedInstruction(BYTE* src)
 {
-	char path[MAX_PATH];
-	GetModuleFileNameA(module, path, MAX_PATH);
-	return path;
+	/*
+		Conditional Jumps (0x70 to 0x7F):
+			* These are short conditional jumps, like JZ, JNZ, JL, JG, etc., that use an 8-bit signed offset (1-byte).
+			* Example: 0x74 (JZ - Jump if Zero), 0x75 (JNZ - Jump if Not Zero).
+		Loop Instructions (0xE0 to 0xE2):
+			* These instructions are relative and use an 8-bit displacement.
+			* LOOP, LOOPZ, LOOPNZ - They decrement ECX and jump if ECX is not zero.
+	*/
+	return (*src >= 0xE0 && *src <= 0xE2) || (*src >= 0x70 && *src <= 0x7F);
 }
 
-HMODULE Hook::getModuleHandleFromAddress(const void* address)
+inline bool Hook::CheckPadding(BYTE* patch_address)
 {
-	HMODULE module = nullptr;
-	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-		static_cast<const char*>(address), &module);
-	return module;
+	return (memcmp("\x90\x90\x90\x90\x90", patch_address, 5) == S_OK ||		// Normal padding
+		memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address, 5) == S_OK ||			// Debug padding
+		memcmp("\x00\x00\x00\x00\x00", patch_address, 5) == S_OK);			// Alternative padding
 }
 
-std::string Hook::funcPtrToStr(const void* funcPtr)
+inline std::string Hook::funcPtrToStr(const void* funcPtr)
 {
 	std::ostringstream oss;
-	HMODULE module = getModuleHandleFromAddress(funcPtr);
+	HMODULE module = nullptr;
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		static_cast<const char*>(funcPtr), &module);
 	if (module)
 	{
-		oss << getModulePath(module).c_str() << "+0x" << std::hex <<
-			reinterpret_cast<DWORD>(funcPtr) - reinterpret_cast<DWORD>(module);
+		char path[MAX_PATH] = {};
+		GetModuleFileNameA(module, path, MAX_PATH);
+		oss << path << "+0x" << std::hex << reinterpret_cast<DWORD>(funcPtr) - reinterpret_cast<DWORD>(module);
 	}
 	else
 	{
@@ -85,99 +89,261 @@ std::string Hook::funcPtrToStr(const void* funcPtr)
 	return oss.str();
 }
 
-void* Hook::HotPatch(void* apiproc, const char* apiname, void* hookproc)
+inline void* Hook::OverwriteHeaderWithPadding(BYTE* patch_address, const char* apiname, void* hookproc, DWORD ByteNum)
 {
-	BYTE* targetFunc = static_cast<BYTE*>(apiproc);
-
-	std::ostringstream oss;
-	oss << funcPtrToStr(targetFunc) << ' ';
-
-	char origFuncPtrStr[20] = {};
-	if (!apiname)
+	if (!patch_address || !apiname || !hookproc || ByteNum < 2 || ByteNum + 2 > buff_size)
 	{
-		sprintf_s(origFuncPtrStr, "%p", apiproc);
-		apiname = origFuncPtrStr;
-	}
-
-	auto prevTargetFunc = targetFunc;
-	while (true)
-	{
-		unsigned instructionSize = 0;
-		if (0xE9 == targetFunc[0])
-		{
-			instructionSize = 5;
-			targetFunc += instructionSize + *reinterpret_cast<int*>(targetFunc + 1);
-		}
-		else if (0xEB == targetFunc[0])
-		{
-			instructionSize = 2;
-			targetFunc += instructionSize + *reinterpret_cast<signed char*>(targetFunc + 1);
-		}
-		else if (0xFF == targetFunc[0] && 0x25 == targetFunc[1])
-		{
-			instructionSize = 6;
-			targetFunc = **reinterpret_cast<BYTE***>(targetFunc + 2);
-			if (getModuleHandleFromAddress(targetFunc) == getModuleHandleFromAddress(prevTargetFunc))
-			{
-				targetFunc = prevTargetFunc;
-				break;
-			}
-		}
-		else
-		{
-			break;
-		}
-
-		Logging::LogDebug() << Logging::hexDump(prevTargetFunc, instructionSize) << " -> " << funcPtrToStr(targetFunc) << ' ';
-		prevTargetFunc = targetFunc;
-	}
-
-	if (getModuleHandleFromAddress(targetFunc) == GetCurrentDll())
-	{
-		Logging::Log() << "Error: Target function is already hooked: " << apiname;
+		Logging::Log() << __FUNCTION__ " Error: Invalid input!";
 		return nullptr;
 	}
 
-	const DWORD trampolineSize = 32;
-	BYTE* trampoline = static_cast<BYTE*>(
-		VirtualAlloc(nullptr, trampolineSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-	BYTE* src = targetFunc;
-	BYTE* dst = trampoline;
-	while (src - targetFunc < 5)
+	// Entry point could be at the top of a page? so VirtualProtect first to make sure patch_address is readable
+	DWORD dwPrevProtect = 0;
+	if (VirtualProtect(patch_address, buff_size, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect) == FALSE)
 	{
-		unsigned instructionSize = Disasm::getInstructionLength(src);
-		if (0 == instructionSize)
+		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot hook api=%s at addr=%p err=%x", apiname, patch_address - 5, GetLastError());
+		return nullptr; // access denied
+	}
+
+	// Create new memory and prepare to patch
+	DWORD mem_size = (((ByteNum + 5) / 8) + 2) * 8;
+	BYTE* new_mem = (BYTE*)VirtualAlloc(nullptr, mem_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	DWORD dwNull = 0;
+	if (!new_mem || VirtualProtect(new_mem, mem_size, PAGE_EXECUTE_READWRITE, &dwNull) == FALSE)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot mark memory as executable api=%s at addr=%p err=%x", apiname, new_mem, GetLastError());
+
+		if (new_mem)
 		{
-			Logging::Log() << "Error: Failed to get instruction size from target function: " << apiname;
+			VirtualFree(new_mem, 0, MEM_RELEASE);
+		}
+
+		// Restore protection
+		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+
+		return nullptr; // access denied
+	}
+	memset(new_mem, 0x90, mem_size);
+
+	// Special handling for 2-byte jmp header
+	if (memcmp("\xEB", (patch_address + 5), 1) == S_OK)
+	{
+		*((BYTE*)new_mem) = 0xE9; // jmp (5-byte relative)
+		BYTE* CallJmpAddress = (BYTE*)(*(BYTE*)(patch_address + 6) + (DWORD)patch_address + 7); // address to call/jmp
+		*((DWORD*)(new_mem + 1)) = (DWORD)CallJmpAddress - (DWORD)new_mem - 5; // relative address
+		*(new_mem + 6) = 0xE9; // jmp (5-byte relative)
+		*((DWORD*)(new_mem + 6 + 1)) = (DWORD)patch_address - (DWORD)new_mem; // relative address
+	}
+	// Write old data to new memory before overwritting it
+	else
+	{
+		memcpy(new_mem, patch_address + 5, ByteNum);
+		*(new_mem + ByteNum) = 0xE9; // jmp (4-byte relative)
+		*((DWORD*)(new_mem + ByteNum + 1)) = (DWORD)patch_address - (DWORD)new_mem; // relative address
+	}
+
+	// Backup memory
+	HOTPATCH tmpMemory;
+	tmpMemory.procaddr = patch_address;
+	tmpMemory.alocmemaddr = new_mem;
+	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, buff_size, nullptr);
+
+	// Overwrite with NOPs to align
+	memset(patch_address + 5, 0x90, ByteNum); // Overwrite remaining bytes with NOPs to align
+
+	// Set HotPatch hook
+	*patch_address = 0xE9; // jmp (4-byte relative)
+	*((DWORD*)(patch_address + 1)) = (DWORD)hookproc - (DWORD)patch_address - 5; // relative address
+	*((WORD*)(patch_address + 5)) = 0xF9EB; // should be atomic write (jmp $-5)
+
+	// Get memory after update
+	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, buff_size, nullptr);
+
+	// Restore protection
+	VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+
+	// Flush cache
+	FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
+
+	// Pin module
+	HMODULE module = nullptr;
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<char*>(hookproc), &module);
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<char*>(patch_address + 5), &module);
+
+#ifdef _DEBUG
+	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p headersize=%d hook=%p", apiname, (patch_address + 5), ByteNum, hookproc);
+#endif
+	return new_mem;
+}
+
+inline void* Hook::RewriteHeader(BYTE* patch_address, const char* apiname, void* hookproc, DWORD ByteNum)
+{
+	if (!patch_address || !apiname || !hookproc || ByteNum < 5 || ByteNum + 5 > buff_size)
+	{
+		Logging::Log() << __FUNCTION__ " Error: Invalid input!";
+		return nullptr;
+	}
+
+	// Entry point could be at the top of a page? so VirtualProtect first to make sure patch_address is readable
+	DWORD dwPrevProtect = 0;
+	if (VirtualProtect(patch_address, buff_size, PAGE_EXECUTE_WRITECOPY, &dwPrevProtect) == FALSE)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot hook api=%s at addr=%p err=%x", apiname, patch_address - 5, GetLastError());
+		return nullptr; // access denied
+	}
+
+	// Create new memory and prepare to patch
+	DWORD mem_size = (((ByteNum + 5) / 8) + 2) * 8;
+	BYTE* new_mem = (BYTE*)VirtualAlloc(nullptr, mem_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	DWORD dwNull = 0;
+	if (!new_mem || VirtualProtect(new_mem, mem_size, PAGE_EXECUTE_READWRITE, &dwNull) == FALSE)
+	{
+		Logging::LogFormat(__FUNCTION__ " Error: access denied.  Cannot mark memory as executable api=%s at addr=%p err=%x", apiname, new_mem, GetLastError());
+
+		if (new_mem)
+		{
+			VirtualFree(new_mem, 0, MEM_RELEASE);
+		}
+
+		// Restore protection
+		VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+
+		return nullptr; // access denied
+	}
+	memset(new_mem, 0x90, mem_size);
+
+	// Write old data to new memory before overwritting it
+	memcpy(new_mem, patch_address + 5, ByteNum);
+	*(new_mem + ByteNum) = 0xE9; // jmp (5-byte relative)
+	*((DWORD*)(new_mem + ByteNum + 1)) = (DWORD)patch_address - (DWORD)new_mem; // relative address
+
+	// Special handling for 5-byte assembly header (call/jmp)
+	if (memcmp("\xE8", new_mem, 1) == S_OK || memcmp("\xE9", new_mem, 1) == S_OK)
+	{
+		BYTE* CallJmpAddress = (BYTE*)(*(DWORD*)(patch_address + 6) + (DWORD)patch_address + 10); // address to call/jmp
+		*((DWORD*)(new_mem + 1)) = (DWORD)CallJmpAddress - (DWORD)new_mem - 5; // relative address
+	}
+
+	// Backup memory
+	HOTPATCH tmpMemory;
+	tmpMemory.procaddr = patch_address;
+	tmpMemory.alocmemaddr = new_mem;
+	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpOrgBuffer, buff_size, nullptr);
+
+	// Overwrite with NOPs to align
+	memset(patch_address + 5, 0x90, ByteNum); // Overwrite bytes with NOPs to align
+
+	// Set HotPatch hook
+	*(patch_address + 5) = 0xE9; // jmp (4-byte relative)
+	*((DWORD*)(patch_address + 6)) = (DWORD)hookproc - (DWORD)patch_address - 10; // relative address
+
+	// Get memory after update
+	ReadProcessMemory(GetCurrentProcess(), patch_address, tmpMemory.lpNewBuffer, buff_size, nullptr);
+
+	// Restore protection
+	VirtualProtect(patch_address, buff_size, dwPrevProtect, &dwPrevProtect);
+
+	// Flush cache
+	FlushInstructionCache(GetCurrentProcess(), patch_address, buff_size);
+
+	// Pin modules
+	HMODULE module = nullptr;
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<char*>(hookproc), &module);
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<char*>(patch_address + 5), &module);
+
+#ifdef _DEBUG
+	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p headersize=%d hook=%p", apiname, (patch_address + 5), ByteNum, hookproc);
+#endif
+	return new_mem;
+}
+
+void* Hook::HotPatch(void* apiproc, const char* apiname, void* hookproc)
+{
+#ifdef _DEBUG
+	Logging::LogFormat(__FUNCTION__ ": api=%s addr=%p hook=%p", apiname, apiproc, hookproc);
+#endif
+
+	// Check API address
+	if (!apiproc)
+	{
+		Logging::Log() << __FUNCTION__ << " Error: Failed to find '" << apiname << "' api";
+		return nullptr;
+	}
+
+	// Check hook address
+	if (!hookproc)
+	{
+		Logging::Log() << __FUNCTION__ << " Error: Invalid hook address for '" << apiname << "'";
+		return nullptr;
+	}
+
+	// Get API addresses
+	BYTE* patch_address = ((BYTE*)apiproc) - 5;
+	BYTE* srcLocation = (BYTE*)apiproc;
+
+	// Initual instruction size
+	unsigned instructionSize = Disasm::getInstructionLength(srcLocation);
+
+	LOG_DEBUG << Logging::hexDump(srcLocation, instructionSize) << " -> " << funcPtrToStr(srcLocation) << ' ';
+
+	// Check if there is a padding
+	bool IsPadding = instructionSize < 5 && CheckPadding(patch_address);	// No need for padding if the instruction size is large enough
+	DWORD BytesNeeded = IsPadding ? 2 : 5;
+
+	// Check for unsupported instructions
+	if (instructionSize == 0 || IsUnsupportedInstruction(srcLocation) || (!IsPadding  && *srcLocation == 0xEB))	// Currently 0xEB is only supported with padding
+	{
+		Logging::Log() << __FUNCTION__ " Error: unsupported instruction found in '" << apiname << "'. Code: " << Logging::hexDump(srcLocation, instructionSize)
+			<< " (" << funcPtrToStr(apiproc) << " " << Logging::hexDump(patch_address, buff_size) << ')';
+		return nullptr;
+	}
+
+	// Loop through each instruction to get instruction set size
+	srcLocation += instructionSize;
+	while (instructionSize < BytesNeeded)
+	{
+		// New instruction size
+		unsigned newInstructionSize = Disasm::getInstructionLength(srcLocation);
+
+		LOG_DEBUG << Logging::hexDump(srcLocation, newInstructionSize) << " -> " << funcPtrToStr(srcLocation) << ' ';
+
+		// Check for unsupported instructions, 0xE8, 0xE9 and 0xEB are only supported with the first instruction
+		if (newInstructionSize == 0 || IsUnsupportedInstruction(srcLocation) || *srcLocation == 0xE8 || *srcLocation == 0xE9 || *srcLocation == 0xEB)
+		{
+			Logging::Log() << __FUNCTION__ " Error: unsupported instruction found in loop in '" << apiname << "'. Code: " << Logging::hexDump(srcLocation, 1)
+				<< " (" << funcPtrToStr(apiproc) << " " << Logging::hexDump(patch_address, buff_size) << ')';
 			return nullptr;
 		}
 
-		memcpy(dst, src, instructionSize);
-		if (0xE8 == *src && 5 == instructionSize)
-		{
-			*reinterpret_cast<int*>(dst + 1) += src - dst;
-		}
-
-		src += instructionSize;
-		dst += instructionSize;
+		// Get new instruction location
+		srcLocation += newInstructionSize;
+		instructionSize += newInstructionSize;
 	}
 
-	Logging::LogDebug() << "Hooking function: " << apiname << " (" << oss.str() << Logging::hexDump(targetFunc, src - targetFunc) << ')';
+	// Check instruction size
+	if (instructionSize > buff_size - 5)
+	{
+		Logging::Log() << __FUNCTION__ " Error: instructions are too long in '" << apiname << "'. Size: " << instructionSize
+			<< " (" << funcPtrToStr(apiproc) << " " << Logging::hexDump(patch_address, buff_size) << ')';
+		return nullptr;
+	}
 
-	*dst = 0xE9;
-	*reinterpret_cast<int*>(dst + 1) = src - (dst + 5);
-	DWORD oldProtect = 0;
-	VirtualProtect(trampoline, trampolineSize, PAGE_EXECUTE_READ, &oldProtect);
+	LOG_DEBUG << __FUNCTION__ " Hooking '" << apiname << "'. Instruction Code: " << Logging::hexDump(apiproc, srcLocation - (BYTE*)apiproc)
+		<< "'. Size: " << instructionSize << " (" << funcPtrToStr(apiproc) << " " << Logging::hexDump(patch_address, buff_size) << ')';
 
-	VirtualProtect(targetFunc, src - targetFunc, PAGE_EXECUTE_READWRITE, &oldProtect);
-	targetFunc[0] = 0xE9;
-	*reinterpret_cast<int*>(targetFunc + 1) = static_cast<BYTE*>(hookproc) - (targetFunc + 5);
-	memset(targetFunc + 5, 0xCC, src - targetFunc - 5);
-	VirtualProtect(targetFunc, src - targetFunc, PAGE_EXECUTE_READ, &oldProtect);
+	// Overwrite API with padding
+	if (IsPadding && instructionSize < 5)
+	{
+		return OverwriteHeaderWithPadding(patch_address, apiname, hookproc, instructionSize);
+	}
 
-	HMODULE module = nullptr;
-	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-		reinterpret_cast<char*>(targetFunc), &module);
-
-	return trampoline;
+	// Rewrite API header
+	else
+	{
+		return RewriteHeader(patch_address, apiname, hookproc, instructionSize);
+	}
 }
