@@ -119,7 +119,7 @@ void Hook::UnhookAPI(HMODULE module, const char *dll, void *apiproc, const char 
 	}
 
 	// Unhooking HotPatch
-	UnhookHotPatch(apiproc, apiname, hookproc);
+	//UnhookHotPatch(apiproc, apiname, hookproc);
 
 	// Check if dll name is blank
 	if (!dll)
@@ -286,7 +286,7 @@ bool Hook::CheckExportAddress(HMODULE hModule, void* AddressCheck)
 // Unhook all APIs
 bool Hook::UnhookAll()
 {
-	return (UnHotPatchAll() && UnIATPatchAll());
+	return (/*UnHotPatchAll() &&*/ UnIATPatchAll());
 }
 
 // Get pointer for function name from binary file

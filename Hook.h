@@ -19,9 +19,7 @@ namespace Hook
 	bool UnhookAll();
 
 	// HotPatch hooks
-	void *HotPatch(void*, const char*, void*, bool = false);
-	bool UnhookHotPatch(void *, const char *, void *);
-	bool UnHotPatchAll();
+	void *HotPatch(void*, const char*, void*);
 
 	// IATPatch hooks
 	void *IATPatch(HMODULE, DWORD, const char*, void*, const char*, void*);

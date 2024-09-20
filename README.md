@@ -12,6 +12,7 @@ This software is provided 'as-is', without any express or implied warranty. In n
 
 This project uses code from several other projects. Below is a list of locations that source code was taken from:
 
+ - [DDrawCompat](https://github.com/narzoul/DDrawCompat/): Includes code from DDrawCompat for API hooking.
  - [DxWnd](https://sourceforge.net/projects/dxwnd/): Includes code from DxWnd for API hooking.
  - [GetFunctionAddress](http://www.rohitab.com/discuss/topic/40594-parsing-pe-export-table/): Includes code from rohitab.com to parse the PE export table.
 
