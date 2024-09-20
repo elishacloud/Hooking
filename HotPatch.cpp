@@ -64,7 +64,7 @@ std::string Hook::getModulePath(HMODULE module)
 HMODULE Hook::getModuleHandleFromAddress(const void* address)
 {
 	HMODULE module = nullptr;
-	GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 		static_cast<const char*>(address), &module);
 	return module;
 }
@@ -176,7 +176,7 @@ void* Hook::HotPatch(void* apiproc, const char* apiname, void* hookproc)
 	VirtualProtect(targetFunc, src - targetFunc, PAGE_EXECUTE_READ, &oldProtect);
 
 	HMODULE module = nullptr;
-	GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
 		reinterpret_cast<char*>(targetFunc), &module);
 
 	return trampoline;
