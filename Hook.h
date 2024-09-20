@@ -5,24 +5,19 @@
 #endif
 
 #include <windows.h>
+#include <string>
 #include "Logging\Logging.h"
 
 namespace Hook
 {
-	FARPROC GetProcAddress(HMODULE, LPCSTR);
+	FARPROC GetProcAddress(HMODULE hModule, LPCSTR FunctionName);
+	std::string funcPtrToStr(const void* funcPtr);
 	bool CheckExportAddress(HMODULE hModule, void* AddressCheck);
-	HMODULE GetModuleHandle(char*);
-
-	// Managed hooks
-	void *HookAPI(HMODULE, const char *, void *, const char *, void *);
-	void UnhookAPI(HMODULE, const char *, void *, const char *, void *);
-	bool UnhookAll();
+	HMODULE GetModuleHandle(char* ProcName);
 
 	// HotPatch hooks
-	void *HotPatch(void*, const char*, void*);
+	void* HotPatch(void* apiproc, const char* apiname, void* hookproc);
 
 	// IATPatch hooks
-	void *IATPatch(HMODULE, DWORD, const char*, void*, const char*, void*);
-	bool UnhookIATPatch(HMODULE, DWORD, const char *, void *, const char *, void *);
-	bool UnIATPatchAll();
+	void* IATPatch(HMODULE module, const char* apiname, void* hookproc);
 }

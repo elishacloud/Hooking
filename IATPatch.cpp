@@ -1,5 +1,5 @@
 /**
-* Copyright (C) 2023 Elisha Riedlinger
+* Copyright (C) 2024 Elisha Riedlinger
 *
 * This software is  provided 'as-is', without any express  or implied  warranty. In no event will the
 * authors be held liable for any damages arising from the use of this software.
@@ -13,448 +13,94 @@
 *      being the original software.
 *   3. This notice may not be removed or altered from any source distribution.
 *
-* Created from source code found in DxWnd v2.03.99
-* https://sourceforge.net/projects/dxwnd/
+* Created from source code found in DDrawCompat v0.5.4
+* https://github.com/narzoul/DDrawCompat
 */
 
 // return:
 // 0 = patch failed
-// 1 = already patched
 // addr = address of the original function
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#include <string>
-#include <vector>
 #include "Hook.h"
 
 namespace Hook
 {
-	struct IATPATCH
-	{
-		HMODULE module = nullptr;
-		DWORD ordinal = 0;
-		std::string dll;
-		void *apiproc = nullptr;
-		std::string apiname;
-		void *hookproc = nullptr;
-	};
-
-	std::vector<IATPATCH> IATPatchProcs;
-
-	void StoreIATRecord(HMODULE module, DWORD ordinal, const char *dll, void *apiproc, const char *apiname, void *hookproc)
-	{
-		IATPATCH tmpMemory;
-		tmpMemory.module = module;
-		tmpMemory.ordinal = ordinal;
-		tmpMemory.dll = std::string(dll);
-		tmpMemory.apiproc = apiproc;
-		tmpMemory.hookproc = hookproc;
-		tmpMemory.apiname = std::string(apiname);
-		IATPatchProcs.push_back(tmpMemory);
-	}
+	PIMAGE_NT_HEADERS getImageNtHeaders(HMODULE module);
+	FARPROC* findProcAddressInIat(HMODULE module, const char* procName);
 }
 
-// Hook API using IAT patch
-void *Hook::IATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apiproc, const char *apiname, void *hookproc)
+PIMAGE_NT_HEADERS Hook::getImageNtHeaders(HMODULE module)
 {
-	PIMAGE_NT_HEADERS pnth;
-	PIMAGE_IMPORT_DESCRIPTOR pidesc;
-	DWORD base, rva;
-	PSTR impmodule;
-	PIMAGE_THUNK_DATA ptaddr;
-	PIMAGE_THUNK_DATA ptname;
-	PIMAGE_IMPORT_BY_NAME piname;
-	DWORD oldprotect;
-	void *org;
-
-	// Check if dll name is blank
-	if (!dll)
+	PIMAGE_DOS_HEADER dosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(module);
+	if (IMAGE_DOS_SIGNATURE != dosHeader->e_magic)
 	{
-		Logging::LogFormat(__FUNCTION__ " Error: NULL dll name");
 		return nullptr;
 	}
 
-	// Check if API name is blank
-	if (!apiname)
+	PIMAGE_NT_HEADERS ntHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(
+		reinterpret_cast<char*>(dosHeader) + dosHeader->e_lfanew);
+	if (IMAGE_NT_SIGNATURE != ntHeaders->Signature)
 	{
-		Logging::LogFormat(__FUNCTION__ " Error: NULL api name");
 		return nullptr;
 	}
 
-	// Check module addresses
-	if (!module)
+	return ntHeaders;
+}
+
+FARPROC* Hook::findProcAddressInIat(HMODULE module, const char* procName)
+{
+	if (!module || !procName)
 	{
-		Logging::LogFormat(__FUNCTION__ " Error: NULL api module address for '%s'", apiname);
 		return nullptr;
 	}
 
-	// Check API address
-	if (!apiproc)
+	PIMAGE_NT_HEADERS ntHeaders = getImageNtHeaders(module);
+	if (!ntHeaders)
 	{
-		Logging::LogFormat(__FUNCTION__ " Error: Failed to find '%s' api", apiname);
 		return nullptr;
 	}
 
-	// Check hook address
-	if (!hookproc)
+	char* moduleBase = reinterpret_cast<char*>(module);
+	PIMAGE_IMPORT_DESCRIPTOR importDesc = reinterpret_cast<PIMAGE_IMPORT_DESCRIPTOR>(moduleBase +
+		ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+
+	for (PIMAGE_IMPORT_DESCRIPTOR desc = importDesc;
+		0 != desc->Characteristics && 0xFFFF != desc->Name;
+		++desc)
 	{
-		Logging::LogFormat(__FUNCTION__ " Error: Invalid hook address for '%s'", apiname);
-		return nullptr;
-	}
-
-#ifdef _DEBUG
-	Logging::LogFormat(__FUNCTION__ ": module=%p ordinal=%x name=%s dll=%s", module, ordinal, apiname, dll);	
-#endif
-
-	base = (DWORD)module;
-	org = 0; // by default, ret = 0 => API not found
-
-	__try
-	{
-		pnth = PIMAGE_NT_HEADERS(PBYTE(base) + PIMAGE_DOS_HEADER(base)->e_lfanew);
-		if (!pnth)
+		auto thunk = reinterpret_cast<PIMAGE_THUNK_DATA>(moduleBase + desc->FirstThunk);
+		auto origThunk = reinterpret_cast<PIMAGE_THUNK_DATA>(moduleBase + desc->OriginalFirstThunk);
+		while (0 != thunk->u1.AddressOfData && 0 != origThunk->u1.AddressOfData)
 		{
-			Logging::LogFormat(__FUNCTION__ ": ERROR no PNTH at %d", __LINE__);
-			return nullptr;
-		}
-		rva = pnth->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-		if (!rva)
-		{
-			Logging::LogFormat(__FUNCTION__ ": ERROR no RVA at %d", __LINE__);
-			return nullptr;
-		}
-		pidesc = (PIMAGE_IMPORT_DESCRIPTOR)(base + rva);
-
-		while (pidesc->FirstThunk)
-		{
-			impmodule = (PSTR)(base + pidesc->Name);
-#ifdef _DEBUG
-			//Logging::LogFormat(__FUNCTION__ ": analyze impmodule=%s", impmodule);
-#endif
-			char *fname = impmodule;
-			for (; *fname; fname++); for (; !*fname; fname++);
-
-			if (!lstrcmpiA(dll, impmodule))
+			if (!(origThunk->u1.Ordinal & IMAGE_ORDINAL_FLAG))
 			{
-#ifdef _DEBUG
-				Logging::LogFormat(__FUNCTION__ ": dll=%s found at %p", dll, impmodule);				
-#endif
-
-				ptaddr = (PIMAGE_THUNK_DATA)(base + (DWORD)pidesc->FirstThunk);
-				ptname = (pidesc->OriginalFirstThunk) ? (PIMAGE_THUNK_DATA)(base + (DWORD)pidesc->OriginalFirstThunk) : nullptr;
-
-				while (ptaddr->u1.Function)
+				auto origImport = reinterpret_cast<PIMAGE_IMPORT_BY_NAME>(moduleBase + origThunk->u1.AddressOfData);
+				if (0 == strcmp(reinterpret_cast<char*>(origImport->Name), procName))
 				{
-#ifdef _DEBUG
-					//Logging::LogFormat(__FUNCTION__ ": address=%x ptname=%x", ptaddr->u1.AddressOfData, ptname);
-#endif
-
-					if (ptname)
-					{
-						// examining by function name
-						if (!IMAGE_SNAP_BY_ORDINAL(ptname->u1.Ordinal))
-						{
-							piname = (PIMAGE_IMPORT_BY_NAME)(base + (DWORD)ptname->u1.AddressOfData);
-#ifdef _DEBUG
-							Logging::LogFormat(__FUNCTION__ ": BYNAME ordinal=%x address=%x name=%s hint=%x", ptaddr->u1.Ordinal, ptaddr->u1.AddressOfData, (char *)piname->Name, piname->Hint);							
-#endif
-							if (!lstrcmpiA(apiname, (char *)piname->Name))
-							{
-								break;
-							}
-						}
-						else
-						{
-#ifdef _DEBUG
-							//Logging::LogFormat(__FUNCTION__ ": BYORD target=%x ord=%x", ordinal, IMAGE_ORDINAL32(ptname->u1.Ordinal));
-#endif
-							// skip unknow ordinal 0
-							if (ordinal && (IMAGE_ORDINAL32(ptname->u1.Ordinal) == ordinal))
-							{
-#ifdef _DEBUG
-								Logging::LogFormat(__FUNCTION__ ": BYORD ordinal=%x addr=%x", ptname->u1.Ordinal, ptaddr->u1.Function);
-								//Logging::LogFormat(__FUNCTION__ ": BYORD GetProcAddress=%x", GetProcAddress(GetModuleHandle(dll), MAKEINTRESOURCE(IMAGE_ORDINAL32(ptname->u1.Ordinal))));									
-#endif
-								break;
-							}
-						}
-
-					}
-					else
-					{
-#ifdef _DEBUG
-						//Logging::LogFormat(__FUNCTION__ ": fname=%s", fname);
-						//LogText(buffer);
-#endif
-						if (!lstrcmpiA(apiname, fname))
-						{
-#ifdef _DEBUG
-							Logging::LogFormat(__FUNCTION__ ": BYSCAN ordinal=%x address=%x name=%s", ptaddr->u1.Ordinal, ptaddr->u1.AddressOfData, fname);							
-#endif
-							break;
-						}
-						for (; *fname; fname++); for (; !*fname; fname++);
-					}
-
-					if (apiproc)
-					{
-						// examining by function addr
-						if (ptaddr->u1.Function == (DWORD)apiproc)
-						{
-							break;
-						}
-					}
-					ptaddr++;
-					if (ptname) ptname++;
-				}
-
-				if (ptaddr->u1.Function)
-				{
-					org = (void *)ptaddr->u1.Function;
-					if (org == hookproc) return (void *)1; // already hooked
-
-					if (!VirtualProtect(&ptaddr->u1.Function, 4, PAGE_EXECUTE_READWRITE, &oldprotect))
-					{
-#ifdef _DEBUG
-						Logging::LogFormat(__FUNCTION__ ": VirtualProtect error %d at %d", GetLastError(), __LINE__);						
-#endif
-						return nullptr;
-					}
-					ptaddr->u1.Function = (DWORD)hookproc;
-					if (!VirtualProtect(&ptaddr->u1.Function, 4, oldprotect, &oldprotect))
-					{
-#ifdef _DEBUG
-						Logging::LogFormat(__FUNCTION__ ": VirtualProtect error %d at %d", GetLastError(), __LINE__);						
-#endif
-						return nullptr;
-					}
-					if (!FlushInstructionCache(GetCurrentProcess(), &ptaddr->u1.Function, 4))
-					{
-#ifdef _DEBUG
-						Logging::LogFormat(__FUNCTION__ ": FlushInstructionCache error %d at %d", GetLastError(), __LINE__);						
-#endif
-						return nullptr;
-					}
-#ifdef _DEBUG
-					Logging::LogFormat(__FUNCTION__ " hook=%s address=%p->%p", apiname, org, hookproc);					
-#endif
-					// Record hook
-					StoreIATRecord(module, ordinal, dll, apiproc, apiname, hookproc);
-
-					// Return old address
-					return org;
+					return reinterpret_cast<FARPROC*>(&thunk->u1.Function);
 				}
 			}
-			pidesc++;
-		}
-		if (!pidesc->FirstThunk)
-		{
-#ifdef _DEBUG
-			Logging::LogFormat(__FUNCTION__ ": PE unreferenced function %s:%s", dll, apiname);			
-#endif
-			return nullptr;
-		}
 
+			++thunk;
+			++origThunk;
+		}
 	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		Logging::LogFormat(__FUNCTION__ "Ex: EXCEPTION hook=%s:%s Hook Failed.", dll, apiname);
-	}
-	return org;
+
+	return nullptr;
 }
 
-// Restore all addresses hooked
-bool Hook::UnIATPatchAll()
+void* Hook::IATPatch(HMODULE module, const char* apiname, void* hookproc)
 {
-	bool flag = true;
-	while (IATPatchProcs.size() != 0)
+	FARPROC* func = findProcAddressInIat(module, apiname);
+	if (func)
 	{
-		if (!UnhookIATPatch(IATPatchProcs.back().module, IATPatchProcs.back().ordinal, IATPatchProcs.back().dll.c_str(), IATPatchProcs.back().apiproc, IATPatchProcs.back().apiname.c_str(), IATPatchProcs.back().hookproc))
-		{
-			// Failed to restore address
-			flag = false;
-			Logging::LogFormat(__FUNCTION__ ": failed to restore address. procaddr: %p", IATPatchProcs.back().apiproc);
-		}
-		IATPatchProcs.pop_back();
+		LOG_DEBUG << "Hooking function via IAT: " << apiname << " (" << funcPtrToStr(*func) << ')';
+		DWORD oldProtect = 0;
+		VirtualProtect(func, sizeof(func), PAGE_READWRITE, &oldProtect);
+		*func = static_cast<FARPROC>(hookproc);
+		DWORD dummy = 0;
+		VirtualProtect(func, sizeof(func), oldProtect, &dummy);
+		return func;
 	}
-	IATPatchProcs.clear();
-	return flag;
-}
-
-// Unhook IAT patched API
-bool Hook::UnhookIATPatch(HMODULE module, DWORD ordinal, const char *dll, void *apiproc, const char *apiname, void *hookproc)
-{
-	PIMAGE_NT_HEADERS pnth;
-	PIMAGE_IMPORT_DESCRIPTOR pidesc;
-	DWORD base, rva;
-	PSTR impmodule;
-	PIMAGE_THUNK_DATA ptaddr;
-	PIMAGE_THUNK_DATA ptname;
-	PIMAGE_IMPORT_BY_NAME piname;
-	DWORD oldprotect;
-	void *org;
-
-#ifdef _DEBUG
-	Logging::LogFormat(__FUNCTION__ ": module=%p ordinal=%x name=%s dll=%s", module, ordinal, apiname, dll);	
-#endif
-
-	base = (DWORD)module;
-	org = 0;
-
-	__try
-	{
-		pnth = PIMAGE_NT_HEADERS(PBYTE(base) + PIMAGE_DOS_HEADER(base)->e_lfanew);
-		if (!pnth)
-		{
-			Logging::LogFormat(__FUNCTION__ ": ERROR no PNTH at %d", __LINE__);
-			return false;
-		}
-		rva = pnth->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-		if (!rva)
-		{
-			Logging::LogFormat(__FUNCTION__ ": ERROR no RVA at %d", __LINE__);
-			return false;
-		}
-		pidesc = (PIMAGE_IMPORT_DESCRIPTOR)(base + rva);
-
-		while (pidesc->FirstThunk)
-		{
-			impmodule = (PSTR)(base + pidesc->Name);
-#ifdef _DEBUG
-			//Logging::LogFormat(__FUNCTION__ ": analyze impmodule=%s", impmodule);
-#endif
-			char *fname = impmodule;
-			for (; *fname; fname++); for (; !*fname; fname++);
-
-			if (!lstrcmpiA(dll, impmodule))
-			{
-#ifdef _DEBUG
-				Logging::LogFormat(__FUNCTION__ ": dll=%s found at %p", dll, impmodule);				
-#endif
-
-				ptaddr = (PIMAGE_THUNK_DATA)(base + (DWORD)pidesc->FirstThunk);
-				ptname = (pidesc->OriginalFirstThunk) ? (PIMAGE_THUNK_DATA)(base + (DWORD)pidesc->OriginalFirstThunk) : nullptr;
-
-				while (ptaddr->u1.Function)
-				{
-#ifdef _DEBUG
-					//Logging::LogFormat(__FUNCTION__ ": address=%x ptname=%x", ptaddr->u1.AddressOfData, ptname);
-#endif
-
-					if (ptname)
-					{
-						// examining by function name
-						if (!IMAGE_SNAP_BY_ORDINAL(ptname->u1.Ordinal))
-						{
-							piname = (PIMAGE_IMPORT_BY_NAME)(base + (DWORD)ptname->u1.AddressOfData);
-#ifdef _DEBUG
-							Logging::LogFormat(__FUNCTION__ ": BYNAME ordinal=%x address=%x name=%s hint=%x", ptaddr->u1.Ordinal, ptaddr->u1.AddressOfData, (char *)piname->Name, piname->Hint);							
-#endif
-							if (!lstrcmpiA(apiname, (char *)piname->Name))
-							{
-								break;
-							}
-						}
-						else
-						{
-#ifdef _DEBUG
-							//Logging::LogFormat(__FUNCTION__ ": BYORD target=%x ord=%x", ordinal, IMAGE_ORDINAL32(ptname->u1.Ordinal));
-#endif
-							// skip unknown ordinal 0
-							if (ordinal && (IMAGE_ORDINAL32(ptname->u1.Ordinal) == ordinal))
-							{
-#ifdef _DEBUG
-								Logging::LogFormat(__FUNCTION__ ": BYORD ordinal=%x addr=%x", ptname->u1.Ordinal, ptaddr->u1.Function);
-								//Logging::LogFormat(__FUNCTION__ ": BYORD GetProcAddress=%x", GetProcAddress(GetModuleHandle(dll), MAKEINTRESOURCE(IMAGE_ORDINAL32(ptname->u1.Ordinal))));									
-#endif
-								break;
-							}
-						}
-
-					}
-					else
-					{
-#ifdef _DEBUG
-						//Logging::LogFormat(__FUNCTION__ ": fname=%s", fname);
-#endif
-						if (!lstrcmpiA(apiname, fname))
-						{
-#ifdef _DEBUG
-							Logging::LogFormat(__FUNCTION__ ": BYSCAN ordinal=%x address=%x name=%s", ptaddr->u1.Ordinal, ptaddr->u1.AddressOfData, fname);							
-#endif
-							break;
-						}
-						for (; *fname; fname++); for (; !*fname; fname++);
-					}
-
-					if (apiproc)
-					{
-						// examining by function addr
-						if (ptaddr->u1.Function == (DWORD)apiproc)
-						{
-							break;
-						}
-					}
-					ptaddr++;
-					if (ptname) ptname++;
-				}
-
-				if (ptaddr->u1.Function)
-				{
-					org = (void *)ptaddr->u1.Function;
-
-					// Check if API is patched
-					if (org == hookproc)
-					{
-
-						if (!VirtualProtect(&ptaddr->u1.Function, 4, PAGE_EXECUTE_READWRITE, &oldprotect))
-						{
-#ifdef _DEBUG
-							Logging::LogFormat(__FUNCTION__ ": VirtualProtect error %d at %d", GetLastError(), __LINE__);							
-#endif
-							return false;
-						}
-						ptaddr->u1.Function = (DWORD)apiproc;
-						if (!VirtualProtect(&ptaddr->u1.Function, 4, oldprotect, &oldprotect))
-						{
-#ifdef _DEBUG
-							Logging::LogFormat(__FUNCTION__ ": VirtualProtect error %d at %d", GetLastError(), __LINE__);							
-#endif
-							return false;
-						}
-						if (!FlushInstructionCache(GetCurrentProcess(), &ptaddr->u1.Function, 4))
-						{
-#ifdef _DEBUG
-							Logging::LogFormat(__FUNCTION__ ": FlushInstructionCache error %d at %d", GetLastError(), __LINE__);							
-#endif
-							return false;
-						}
-#ifdef _DEBUG
-						Logging::LogFormat(__FUNCTION__ " hook=%s address=%p->%p", apiname, org, hookproc);						
-#endif
-
-						return true;
-					}
-					return false;
-				}
-			}
-			pidesc++;
-		}
-		if (!pidesc->FirstThunk)
-		{
-#ifdef _DEBUG
-			Logging::LogFormat(__FUNCTION__ ": PE unreferenced function %s:%s", dll, apiname);			
-#endif
-			return false;
-		}
-
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		Logging::LogFormat(__FUNCTION__ "Ex: EXCEPTION hook=%s:%s Hook Failed.", dll, apiname);
-	}
-	return false;
+	return nullptr;
 }

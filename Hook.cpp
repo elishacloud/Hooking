@@ -1,5 +1,5 @@
 /**
-* Copyright (C) 2023 Elisha Riedlinger
+* Copyright (C) 2024 Elisha Riedlinger
 *
 * This software is  provided 'as-is', without any express  or implied  warranty. In no event will the
 * authors be held liable for any damages arising from the use of this software.
@@ -16,128 +16,17 @@
 * Created from source code found in DxWnd v2.03.99
 * https://sourceforge.net/projects/dxwnd/
 *
+* Created from source code found in DDrawCompat v0.5.4
+* https://github.com/narzoul/DDrawCompat
+*
 * Code in GetProcAddress function taken from source code found on rohitab.com
 * http://www.rohitab.com/discuss/topic/40594-parsing-pe-export-table/
 */
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#include <Windows.h>
+#include "Hook.h"
+#include <sstream>
 #include <stdio.h>
 #include <psapi.h>
-#include "Hook.h"
-
-// Hook API using host patch or IAT patch
-void *Hook::HookAPI(HMODULE module, const char *dll, void *apiproc, const char *apiname, void *hookproc)
-{
-#ifdef _DEBUG
-	Logging::Log() << __FUNCTION__ << ": module=" << module << " dll=" << dll << " apiproc=" << apiproc << " apiname=" << apiname << " hookproc=" << hookproc;
-#endif
-
-	// Check if API name is blank
-	if (!apiname)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: NULL api name";
-		return nullptr;
-	}
-
-	// Check API address
-	if (!apiproc)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: Failed to find '" << apiname << "' api";
-		return nullptr;
-	}
-
-	// Check hook address
-	if (!hookproc)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: Invalid hook address for '" << apiname << "'";
-		return nullptr;
-	}
-
-	// Try HotPatch first
-	void *orig;
-	orig = HotPatch(apiproc, apiname, hookproc);
-	if ((DWORD)orig > 1)
-	{
-		return orig;
-	}
-
-	// Check if dll name is blank
-	if (!dll)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: NULL dll name";
-		return nullptr;
-	}
-
-	// Check module addresses
-	if (!module)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: NULL api module address for '" << dll << "'";
-		return nullptr;
-	}
-
-	// Try IATPatch next
-	orig = IATPatch(module, 0, dll, apiproc, apiname, hookproc);
-	if ((DWORD)orig > 1)
-	{
-		return orig;
-	}
-
-	// Return default address
-	return nullptr;
-}
-
-// Unhook API
-void Hook::UnhookAPI(HMODULE module, const char *dll, void *apiproc, const char *apiname, void *hookproc)
-{
-#ifdef _DEBUG
-	Logging::Log() << __FUNCTION__ << ": module=" << module << " dll=" << dll << " apiproc=" << apiproc << " apiname=" << apiname << " hookproc=" << hookproc;
-#endif
-
-	// Check if API name is blank
-	if (!apiname)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: NULL api name";
-		return;
-	}
-
-	// Check API address
-	if (!apiproc)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: Failed to find '" << apiname << "' api";
-		return;
-	}
-
-	// Check hook address
-	if (!hookproc)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: Invalid hook address for '" << apiname << "'";
-		return;
-	}
-
-	// Unhooking HotPatch
-	//UnhookHotPatch(apiproc, apiname, hookproc);
-
-	// Check if dll name is blank
-	if (!dll)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: NULL dll name";
-		return;
-	}
-
-	// Check module addresses
-	if (!module)
-	{
-		Logging::Log() << __FUNCTION__ << " Error: NULL api module address for '" << dll << "'";
-		return;
-	}
-
-	// Unhook IATPatch
-	UnhookIATPatch(module, 0, dll, apiproc, apiname, hookproc);
-}
 
 // Get pointer for function name from binary file
 FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
@@ -215,6 +104,25 @@ FARPROC Hook::GetProcAddress(HMODULE hModule, LPCSTR FunctionName)
 	return functAddr;
 }
 
+std::string Hook::funcPtrToStr(const void* funcPtr)
+{
+	std::ostringstream oss;
+	HMODULE module = nullptr;
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		static_cast<const char*>(funcPtr), &module);
+	if (module)
+	{
+		char path[MAX_PATH] = {};
+		GetModuleFileNameA(module, path, MAX_PATH);
+		oss << path << "+0x" << std::hex << reinterpret_cast<DWORD>(funcPtr) - reinterpret_cast<DWORD>(module);
+	}
+	else
+	{
+		oss << funcPtr;
+	}
+	return oss.str();
+}
+
 // Get function name by ordinal from binary file
 bool Hook::CheckExportAddress(HMODULE hModule, void* AddressCheck)
 {
@@ -281,12 +189,6 @@ bool Hook::CheckExportAddress(HMODULE hModule, void* AddressCheck)
 
 	// Exit function
 	return false;
-}
-
-// Unhook all APIs
-bool Hook::UnhookAll()
-{
-	return (/*UnHotPatchAll() &&*/ UnIATPatchAll());
 }
 
 // Get pointer for function name from binary file

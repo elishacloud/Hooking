@@ -21,13 +21,6 @@
 // 0 = patch failed
 // addr = address of the original function
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#include <Windows.h>
-#include <sstream>
-#include <string>
 #include "Hook.h"
 #include "Disasm.cpp"
 
@@ -45,7 +38,6 @@ namespace Hook
 
 	bool IsUnsupportedInstruction(BYTE* src);
 	bool CheckPadding(BYTE* patch_address);
-	std::string funcPtrToStr(const void* funcPtr);
 	void* OverwriteHeaderWithPadding(BYTE* patch_address, const char* apiname, void* hookproc, DWORD ByteNum);
 	void* RewriteHeader(BYTE* patch_address, const char* apiname, void* hookproc, DWORD ByteNum);
 }
@@ -68,25 +60,6 @@ inline bool Hook::CheckPadding(BYTE* patch_address)
 	return (memcmp("\x90\x90\x90\x90\x90", patch_address, 5) == S_OK ||		// Normal padding
 		memcmp("\xCC\xCC\xCC\xCC\xCC", patch_address, 5) == S_OK ||			// Debug padding
 		memcmp("\x00\x00\x00\x00\x00", patch_address, 5) == S_OK);			// Alternative padding
-}
-
-inline std::string Hook::funcPtrToStr(const void* funcPtr)
-{
-	std::ostringstream oss;
-	HMODULE module = nullptr;
-	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-		static_cast<const char*>(funcPtr), &module);
-	if (module)
-	{
-		char path[MAX_PATH] = {};
-		GetModuleFileNameA(module, path, MAX_PATH);
-		oss << path << "+0x" << std::hex << reinterpret_cast<DWORD>(funcPtr) - reinterpret_cast<DWORD>(module);
-	}
-	else
-	{
-		oss << funcPtr;
-	}
-	return oss.str();
 }
 
 inline void* Hook::OverwriteHeaderWithPadding(BYTE* patch_address, const char* apiname, void* hookproc, DWORD ByteNum)
